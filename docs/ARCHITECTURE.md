@@ -18,16 +18,19 @@
 
 ### 1.1 项目愿景
 
-**Watchdog** 是一个面向小团队和个人开发者的轻量级监控平台，致力于提供**开箱即用、零依赖部署**的监控解决方案。
+**Watchdog** 是一个面向小团队和个人开发者的轻量级监控平台，致力于提供**开箱即用、零依赖部署**的监控解决方案。通过模板驱动的配置和垂直场景的深度集成，让监控变得简单而强大。
 
 ### 1.2 核心特性
 
 - **🚀 零配置启动**: 单二进制部署，内嵌所有依赖
 - **📊 全栈监控**: HTTP/TCP/系统资源/应用指标全覆盖
 - **🔔 智能告警**: 多维度告警策略与生命周期管理
-- **🎯 模板驱动**: 参数化监控模板，一键复制
+- **🎯 模板驱动**: 参数化监控模板，垂直场景深度集成
 - **🛡️ 企业级安全**: RBAC 权限控制，数据加密存储
 - **📈 高性能**: 单机支持 1000+监控目标，毫秒级响应
+- **🤖 自动化运维**: 智能指令执行、任务调度、协作终端
+- **🌐 Agent 架构**: 轻量级 Agent，跨平台支持，安全通信
+- **🔗 开放集成**: Webhook 推送、Prometheus 兼容、K8s 深度集成
 
 ### 1.3 架构原则
 
@@ -41,7 +44,7 @@
 
 ### 2.1 整体架构
 
-#### 单机版架构图
+#### 系统总体架构图
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -70,6 +73,10 @@
 │  │ │          Collection Framework (采集框架)               │ │   │
 │  │ │ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────┐ │ │   │
 │  │ │ │HTTP/API │ │Ping/TCP │ │Scripts  │ │Prom     │ │K8s   │ │ │   │
+│  │ │ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └──────┘ │ │   │
+│  │ │ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────┐ │ │   │
+│  │ │ │Agent    │ │Push/WH  │ │Template │ │Command  │ │File  │ │ │   │
+│  │ │ │Manager  │ │Receiver │ │Engine   │ │Executor │ │Watcher│ │ │   │
 │  │ │ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └──────┘ │ │   │
 │  │ └─────────────────────────────────────────────────────────┘ │   │
 │  │ ┌─────────────────────────────────────────────────────────┐ │   │
@@ -100,43 +107,149 @@
 
 负责外部请求接入和协议转换：
 
-- **Web UI**: 基于 HTMX 的现代化管理界面
+- **Web UI**: 基于 HTMX + TailwindCSS 的现代化管理界面
 - **REST API**: 标准 RESTful API，支持 JSON/YAML 格式
-- **WebSocket**: 实时数据推送和双向通信
-- **Webhook**: 外部系统集成和事件接收
+- **WebSocket**: 实时数据推送和协作终端
+- **Webhook Receiver**: 外部系统集成和事件接收
+- **Push Gateway**: 数据推送接口，支持安全认证
 
 #### 应用服务层 (Service Layer)
 
 业务逻辑和服务编排：
 
-- **Auth Service**: 统一认证和授权管理
+- **Auth Service**: 统一认证和授权管理，支持 RBAC
 - **Rule Engine**: 告警规则评估和状态管理
-- **Alert Manager**: 告警生命周期管理
+- **Alert Manager**: 告警生命周期管理和智能降噪
 - **Config Manager**: 配置版本控制和热重载
 - **Query Service**: 统一查询接口和缓存
-- **Notification Service**: 通知路由和发送
-- **Template Manager**: 模板管理和实例化
-- **Dashboard**: 仪表盘和可视化
+- **Notification Service**: 多渠道通知路由和发送
+- **Template Manager**: 模板管理和实例化，支持垂直场景
+- **Dashboard Service**: 仪表盘和可视化引擎
+- **Agent Manager**: Agent 生命周期管理和通信
+- **Command Executor**: 远程指令执行和任务调度
+- **Terminal Service**: 协作终端和会话管理
 
 #### 核心引擎层 (Core Engine)
 
 核心功能实现：
 
-- **Collection Framework**: 可扩展的采集框架
-- **Notification Framework**: 可扩展的通知框架
+- **Collection Framework**: 可扩展的采集框架，支持多协议
+- **Notification Framework**: 可扩展的通知框架，支持多渠道
+- **Template Engine**: 模板引擎，支持参数化和实例化
+- **Command Engine**: 指令执行引擎，支持安全约束
 - **Plugin System**: 插件加载和生命周期管理
-- **Scheduler**: 任务调度和资源管理
+- **Scheduler**: 任务调度和资源管理，支持 Cron 表达式
+- **Security Engine**: 安全引擎，负责数据加密和访问控制
 
 #### 存储层 (Storage Layer)
 
 数据持久化和缓存：
 
-- **VictoriaMetrics**: 高性能时序数据库
-- **SQLite**: 轻量级关系数据库
-- **Memory Cache**: 高速内存缓存
-- **File System**: 配置文件和静态资源
-- **NATS**: 内嵌消息总线
-- **Structured Logs**: 结构化日志存储
+- **VictoriaMetrics**: 高性能时序数据库，支持 Prometheus 兼容
+- **SQLite**: 轻量级关系数据库（配置、用户、规则）
+- **Memory Cache**: 高速内存缓存（Ristretto）
+- **File System**: 配置文件、模板和静态资源
+- **NATS Embedded**: 内嵌消息总线，用于 Agent 通信
+- **Structured Logs**: 结构化日志存储（审计、操作）
+- **Backup Storage**: 备份存储，支持本地和云存储
+
+### 2.3 Agent 架构设计
+
+#### Agent 系统架构
+
+```text
+┌──────────────────────────────────────────────────────┐
+│                    Watchdog Server                     │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │                Agent Manager                │ │
+│ │  ● Agent Registry      ● Command Queue     │ │
+│ │  ● Health Monitor      ● Task Scheduler    │ │
+│ │  ● Permission Control ● Result Collector  │ │
+│ └─────────────────────────────────────────────────┘ │
+└───────────────────────┬──────────────────────────────┘
+                       │ NATS/gRPC (TLS)
+┌───────────────────────┼──────────────────────────────┐
+│              Watchdog Agent               │
+│ ┌───────────────────────────────────────────┐ │
+│ │            Core Services             │ │
+│ │ ┌─────────────┐ ┌──────────────────┐ │ │
+│ │ │System Monitor │ │ Command Executor │ │ │
+│ │ │• CPU/Memory   │ │ • Script Engine  │ │ │
+│ │ │• Disk/Network │ │ • Security Check │ │ │
+│ │ │• Process List │ │ • Resource Limit│ │ │
+│ │ └─────────────┘ └──────────────────┘ │ │
+│ │ ┌─────────────┐ ┌──────────────────┐ │ │
+│ │ │File Manager   │ │ Terminal Proxy   │ │ │
+│ │ │• Upload/Down   │ │ • Shell Access    │ │ │
+│ │ │• Permission    │ │ • Session Record  │ │ │
+│ │ │• Path Control  │ │ • Multi-user      │ │ │
+│ │ └─────────────┘ └──────────────────┘ │ │
+│ └───────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+#### Agent 核心特性
+
+- **轻量级设计**: <50MB 内存，<1% CPU，单二进制郦署
+- **跨平台支持**: Linux/Windows/macOS/ARM 全支持
+- **安全通信**: TLS 1.3 + Token 认证，端到端加密
+- **智能发现**: 自动发现系统服务和资源
+- **权限分级**: 监控、运维、管理三级权限体系
+
+### 2.4 模板架构设计
+
+#### 模板引擎架构
+
+```text
+┌───────────────────────────────────────────────────────────┐
+│                    Template Management System                     │
+│ ┌────────────────────────────┐ ┌────────────────────────────┐ │
+│ │       Template Store        │ │     Parameter Engine      │ │
+│ │  ● Official Templates     │ │  ● Variable Replacement   │ │
+│ │  ● Community Templates   │ │  ● Condition Logic       │ │
+│ │  ● Custom Templates      │ │  ● Form Generation       │ │
+│ │  ● Version Control       │ │  ● Validation            │ │
+│ └────────────────────────────┘ └────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │                 Vertical Scene Templates                   │ │
+│ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ │ │
+│ │ │Cryptocurrency│ │ Stock Market  │ │ Weather/IoT   │ │ │
+│ │ │• Price Alert  │ │ • Technical   │ │ • Temperature │ │ │
+│ │ │• Volume Track │ │ • PE Ratio     │ │ • Air Quality │ │ │
+│ │ │• Market Cap   │ │ • Earnings    │ │ • Humidity    │ │ │
+│ │ └─────────────┘ └─────────────┘ └─────────────┘ │ │
+│ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ │ │
+│ │ │System Monitor│ │ Web Service   │ │ Database      │ │ │
+│ │ │• CPU/Memory  │ │ • HTTP Check  │ │ • Connection  │ │ │
+│ │ │• Disk Space  │ │ • SSL Cert    │ │ • Performance │ │ │
+│ │ │• Network     │ │ • Load Time   │ │ • Backup      │ │ │
+│ │ └─────────────┘ └─────────────┘ └─────────────┘ │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────┘
+```
+
+#### 垂直场景模板库
+
+**加密货币监控模板**:
+
+- 数据源: CoinGecko、Binance、CoinMarketCap
+- 监控指标: 价格、成交量、市值排名、波动率
+- 告警策略: 价格阈值、波动异常、恢慌贪婪指数
+- 配置参数: 币种选择、阈值设置、通知方式
+
+**股票投资监控模板**:
+
+- 数据源: Yahoo Finance、Alpha Vantage、东方财富
+- 监控指标: 价格、RSI、MACD、PE 比率、成交量
+- 告警策略: 技术指标、财报日期、业绩预警
+- 配置参数: 股票代码、指标参数、阅值范围
+
+**气象环境监控模板**:
+
+- 数据源: OpenWeatherMap、AccuWeather、中国气象局
+- 监控指标: 温度、湿度、空气质量、极端天气
+- 告警策略: 极端天气预警、空气质量超标、温度异常
+- 配置参数: 地理位置、关注指标、阔值设定
 
 ## 3. 技术选型
 
@@ -154,9 +267,130 @@
 | **消息队列**   | NATS Embedded   | Redis,RabbitMQ | 轻量级   |
 | **缓存**       | Ristretto       | BigCache       | 高性能   |
 
+### 2.5 自动化运维架构
+
+#### 指令执行引擎
+
+```text
+┌───────────────────────────────────────────────────────────┐
+│                    Command Execution Engine                     │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │                    Security Layer                     │ │
+│ │ ┌─────────────────────────────────────────────────┐ │ │
+│ │ │ ● Permission Control  ● Resource Limits      │ │ │
+│ │ │ ● Command Whitelist   ● Execution Timeout    │ │ │
+│ │ │ ● User Authentication ● Audit Logging       │ │ │
+│ │ └─────────────────────────────────────────────────┘ │ │
+│ │ ┌─────────────────────────────────────────────────┐ │ │
+│ │ │                Execution Modes                │ │ │
+│ │ │ ┌─────────────┐ ┌─────────────┐ ┌────────────┐ │ │ │
+│ │ │ │ Immediate   │ │ Scheduled   │ │ Triggered  │ │ │ │
+│ │ │ │ Execution   │ │ Tasks       │ │ Response   │ │ │ │
+│ │ │ └─────────────┘ └─────────────┘ └────────────┘ │ │ │
+│ │ └─────────────────────────────────────────────────┘ │ │
+│ └─────────────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │                   Task Scheduler                     │ │
+│ │ ● Cron Expression Support  ● Dependency Management      │ │
+│ │ ● Fixed Interval Tasks     ● Retry Logic              │ │
+│ │ ● One-time Tasks          ● Performance Analytics   │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────┘
+```
+
+#### 协作终端架构
+
+```text
+┌───────────────────────────────────────────────────────────┐
+│                 Collaborative Terminal System                 │
+┌──────────────┼────────────────────────────────────────┼──────────────┐
+│   Web Client   │              Server Core              │   Agent Side   │
+│               │                                      │               │
+│● Browser      │ ┌──────────────────────────────────────┐ │● PTY Wrapper   │
+│● Terminal UI  │ │          Session Manager          │ │● Shell Process │
+│● File Upload  │ │ ● Multi-user Sessions          │ │● File Transfer│
+│● Real-time    │ │ ● Permission Control           │ │● Command Log  │
+│  Sync         │ │ ● Session Recording            │ │● Resource     │
+│               │ │ ● Resource Monitoring          │ │  Monitoring   │
+│               │ └──────────────────────────────────────┘ │               │
+└───────────────┼────────────────────────────────────────┼──────────────┘
+               │        WebSocket (WSS/TLS)          │
+               └──────────────────────────────────────┘
+```
+
+### 2.6 Push 数据与 Webhook 架构
+
+#### 数据推送架构
+
+```text
+┌───────────────────────────────────────────────────────────┐
+│              External Data Sources & Services              │
+│ ┌───────────────────────────────────────────────────────┐ │
+│ │   GitHub   │  GitLab   │ Jenkins  │ Custom App │ │
+│ │ Webhooks  │ Webhooks  │ Pipeline │  Events    │ │
+│ └───────────────────────────────────────────────────────┘ │
+└────────────────────────────┬──────────────────────────────┘
+                           │ HTTPS/TLS
+┌────────────────────────────┼──────────────────────────────┐
+│         Watchdog Push Gateway         │
+│ ┌───────────────────────────────────────────────────────┐ │
+│ │                Ingress Layer                │ │
+│ │ ● HMAC-SHA256 Signature Verification       │ │
+│ │ ● Token-based Authentication              │ │
+│ │ ● Rate Limiting & DDoS Protection         │ │
+│ │ ● Content Type Detection                 │ │
+│ └───────────────────────────────────────────────────────┘ │
+│ ┌───────────────────────────────────────────────────────┐ │
+│ │              Processing Layer               │ │
+│ │ ● Smart Data Routing                     │ │
+│ │ ● Format Auto-detection (JSON/XML/Form)  │ │
+│ │ ● Deduplication & Buffering             │ │
+│ │ ● Reliable Retry Mechanism              │ │
+│ └───────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌───────────────────────────────────────────────────────────┐
+│              Core Monitoring System              │
+│        Alert Engine │ Storage │ Dashboard        │
+└───────────────────────────────────────────────────────────┘
+```
+
+#### 支持的 Webhook 接口
+
+**通用 Push 接口**:
+
+```text
+POST https://watchdog.example.com/api/v1/push/{source_id}/{token}
+```
+
+**主流平台支持**:
+
+- **GitHub**: Issues, Pull Requests, Push Events, Workflow Status
+- **GitLab**: Pipeline Status, Merge Requests, Issue Updates
+- **Jenkins**: Build Status, Test Results, Deployment Events
+- **Prometheus**: Alert Manager Integration
+- **Grafana**: Annotation Events, Alert Status
+
 ### 3.2 架构决策记录 (ADR)
 
-### 3.4 单机版技术实现路线
+### 3.3 版本规划与技术差异
+
+#### 三版本技术对比
+
+| 功能领域     | 开源版 (Community)       | 企业版 (Enterprise)                  | 云服务 (SaaS)       |
+| ------------ | ------------------------ | ------------------------------------ | ------------------- |
+| **部署架构** | 单机部署，内嵌存储       | 高可用集群，分布式存储               | 多租户 SaaS 架构    |
+| **数据存储** | SQLite + VictoriaMetrics | PostgreSQL + VictoriaMetrics Cluster | 云原生数据库        |
+| **消息队列** | NATS Embedded            | NATS Cluster                         | 云消息服务          |
+| **用户管理** | 单用户模式               | 多租户 + RBAC + SSO                  | 团队协作 + 企业集成 |
+| **数据保留** | 自定义配置               | 无限制自定义                         | 1 年+ 自动管理      |
+| **高级特性** | 基础 AI 特性             | 高级 AI + 机器学习                   | 云原生 AI 服务      |
+| **性能扩展** | 垂直扩展                 | 水平 + 垂直扩展                      | 弹性自动扩展        |
+| **监控目标** | 1000+                    | 10000+                               | 无限制              |
+| **支持服务** | 社区支持                 | 专业支持 + SLA                       | 24/7 云支持         |
+
+#### 单机版技术实现路线
 
 | 技术领域       | 选择方案        | 替代方案       | 选择理由 |
 | -------------- | --------------- | -------------- | -------- |
@@ -548,21 +782,28 @@ field.JSON("labels", map[string]string{}),
 
 ### 6.1 认证与授权
 
-- **All-in-One**: 单进程包含所有功能模块
-- **Zero Dependencies**: 无需外部服务依赖
-- **Embedded Storage**: 内嵌数据库，即开即用
-- **Resource Efficient**: 最小资源占用
-- **Production Ready**: 单机环境生产可用
+#### 安全设计原则
+
+- **最小权限原则**: 默认最小权限，按需授权
+- **分层防护**: 网络、应用、数据多层防护
+- **零信任架构**: 所有访问都需认证和授权
+- **安全默认**: 安全配置作为默认选项
+- **审计追踪**: 完整的操作日志和审计踪迹
 
 #### 主进程结构
 
 ```go
 type Application struct {
     // Core Components
-    server     *gin.Engine
-    scheduler  *scheduler.Manager
-    alertMgr   *alert.Manager
-    notifier   *notification.Manager
+    server      *gin.Engine
+    scheduler   *scheduler.Manager
+    alertMgr    *alert.Manager
+    notifier    *notification.Manager
+    templateMgr *template.Manager
+    agentMgr    *agent.Manager
+    cmdExecutor *command.Executor
+    terminalSvc *terminal.Service
+    pushGateway *push.Gateway
 
     // Storage
     db         *ent.Client        // SQLite
@@ -571,6 +812,11 @@ type Application struct {
 
     // Message Bus
     nats       *nats.Server       // Embedded NATS
+
+    // Security
+    authMgr    *auth.Manager
+    rbac       *rbac.Manager
+    encryption *encrypt.Manager
 
     // Lifecycle
     ctx        context.Context
@@ -1309,67 +1555,83 @@ log_categories:
 
 ## 13. 实施计划
 
-### 13.1 开发阶段划分
+### 13.1 开发阶段划分（与 PRD 一致）
 
-#### Phase 1: 核心框架 (4周)
-- 基础架构搭建
-- 数据模型设计与实现
-- HTTP服务器框架
-- 基础认证与权限系统
+#### M1: 核心框架 (第 1-3 月)
 
-**交付物**:
-- 可运行的基础框架
-- 基础Web UI界面
-- SQLite数据存储
-- 基础监控模板系统
+**阶段目标**: 建立技术基础，验证核心架构
 
-#### Phase 2: 数据采集 (6周)
-- 采集器框架实现
-- HTTP/API监控
-- 系统资源监控
-- Prometheus指标采集
-- Agent开发
+**核心交付**：
+- ✅ **基础监控能力**: HTTP/API 监控、系统资源监控、基础指标采集
+- ✅ **告警系统**: 基础告警引擎、邮件通知、阈值告警
+- ✅ **用户界面**: 简化 Web UI、RESTful API、基础仪表盘
+- ✅ **部署方案**: Docker 单机部署、基础文档、快速开始指南
 
-**交付物**:
-- 完整的数据采集系统
-- 轻量级Agent
-- 基础告警功能
-- 时序数据存储
+**验收标准**：
+- 单机部署时间 ≤ 5 分钟
+- 支持 50+ 监控目标
+- 基础告警功能完全可用
+- 系统资源占用<100MB
 
-#### Phase 3: 告警通知 (4周)
-- 告警规则引擎
-- 通知渠道集成
-- 告警生命周期管理
-- 模板系统完善
+#### M2: 模板生态 (第 4-6 月)
 
-**交付物**:
-- 完整的告警系统
-- 多种通知渠道
-- 告警模板库
-- 用户体验优化
+**阶段目标**: 建立差异化优势，丰富监控场景
 
-#### Phase 4: 高级功能 (6周)
-- 可视化仪表盘
-- 高级查询功能
-- 性能优化
-- 插件系统
-- 安全加固
+**核心交付**：
+- ✅ **垂直模板库**: 金融、天气、系统监控等 15+ 行业模板
+- ✅ **智能 Agent**: 轻量级 Agent、自动化任务调度、远程执行
+- ✅ **高级功能**: 智能告警策略、数据可视化、趋势分析
+- ✅ **用户体验**: 完整文档、最佳实践、社区支持
 
-**交付物**:
-- 生产就绪的单机版
-- 完整的插件体系
-- 性能调优
-- 安全认证
+**验收标准**：
+- 15+ 垂直场景模板可用
+- 支持 1000+ 监控目标
+- 用户配置时间 ≤ 10 分钟
+- 模板部署成功率>95%
 
-### 13.2 技术风险评估
+#### M3: 企业就绪 (第 7-9 月)
+
+**阶段目标**: 达到生产就绪，启动商业化
+
+**核心交付**：
+- ✅ **企业级功能**: 多租户支持、RBAC 权限、SSO 集成
+- ✅ **高可用架构**: 集群部署、数据备份恢复、故障转移
+- ✅ **自动化运维**: 指令执行、协作终端、运维模板体系
+- ✅ **集成能力**: 完整 API 文档、Webhook 集成、第三方平台支持
+- ✅ **商业版本**: SaaS 服务 Beta 版、定价策略、客户支持
+
+**验收标准**：
+- 系统可用性 ≥ 99.9%
+- 通过企业级安全认证
+- 获得首批 10+ 付费客户
+- 月收入达到 $10K+
+
+#### M4: 规模化增长 (第 10-12 月)
+
+**阶段目标**: 建立市场领导地位，实现规模化盈利
+
+**核心交付**：
+- ✅ **AI 驱动的智能监控**: 异常检测、智能降噪、预测分析
+- ✅ **垂直行业解决方案**: 金融、制造业、IoT 等专业化解决方案
+- ✅ **生态伙伴和集成平台**: 插件市场、合作伙伴生态
+- ✅ **国际化和多区域部署**: 全球服务能力、本地化支持
+
+**发展指标**：
+- 开源用户: 20000+
+- 付费用户: 2000+
+- 企业客户: 200+
+- 年收入: $5M+
+
+### 13.2 技术风险评估（与 PRD 一致）
 
 | 风险项 | 风险等级 | 影响 | 应对策略 |
 |--------|---------|-----|---------|
-| **VictoriaMetrics集成** | 中 | 时序数据存储性能 | 准备InfluxDB备选方案 |
-| **前端技术栈** | 低 | 开发效率 | HTMX学习成本较低 |
-| **性能目标达成** | 中 | 用户体验 | 分阶段性能测试与优化 |
-| **插件系统复杂度** | 高 | 扩展性 | 先实现核心功能，插件系统后续迭代 |
-| **单机版限制** | 低 | 可扩展性 | 通过集群版解决 |
+| **时序数据库性能** | 中 | 用户体验下降 | VictoriaMetrics 备选，分层存储策略 |
+| **前端技术栈** | 低 | 开发效率 | HTMX 渐进式采用，React 备选方案 |
+| **单机性能极限** | 中 | 扩展性限制 | 分布式架构预案，性能优化 |
+| **Go 生态依赖** | 低 | 维护成本 | 减少外部依赖，核心组件自研 |
+| **模板系统复杂度** | 中 | 用户采用 | 分阶段实现，从简单模板开始 |
+| **自动化运维安全** | 高 | 安全风险 | 严格权限控制，安全审计，砂箱机制 |
 
 ### 13.3 质量保证策略
 
