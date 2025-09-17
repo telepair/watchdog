@@ -99,6 +99,8 @@ clean:
 	@echo "🧹 Cleaning build artifacts ..."
 	go clean ./...
 	rm -f $(COVERAGE_FILE) coverage.html
+	rm -f watchdog watchdog-agent
+	rm -rf build/
 	@echo "✅ Cleanup completed\n"
 
 # Display help

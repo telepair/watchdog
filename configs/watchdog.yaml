@@ -1,0 +1,147 @@
+# Watchdog Configuration File
+# This is the default configuration for Watchdog monitoring platform
+
+# Server Configuration
+server:
+  listen: ":8080"                    # Server listen address
+  read_timeout: "30s"                # HTTP read timeout
+  timeout: "30s"                     # HTTP timeout
+
+  # TLS Configuration (optional)
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+
+  # CORS Configuration
+  cors:
+    enabled: true
+    origins:
+      - "*"
+
+# Storage Configuration
+storage:
+  data_dir: "./data"                 # Data directory path
+
+  # SQLite Configuration (for metadata)
+  sqlite:
+    path: "watchdog.db"              # SQLite database file
+    max_retries: 5
+    busy_timeout: "5s"
+
+  # Metrics Storage Configuration
+  metrics:
+    type: "memory"                   # Storage type: memory, victoriametrics
+    retention_days: 30               # Data retention period
+
+    # VictoriaMetrics Configuration (when type = "victoriametrics")
+    victoria:
+      url: ""
+      username: ""
+      password: ""
+      timeout: "30s"
+
+  # Cache Configuration
+  cache:
+    type: "memory"                   # Cache type: memory, redis
+    max_size: 104857600             # Max cache size in bytes (100MB)
+    ttl: "1h"                       # Default TTL for cache entries
+
+    # Redis Configuration (when type = "redis")
+    redis:
+      addr: "localhost:6379"
+      password: ""
+      db: 0
+
+# Monitoring Configuration
+monitoring:
+  default_interval: "30s"           # Default monitoring interval
+  max_concurrency: 50               # Maximum concurrent monitors
+  timeout: "10s"                    # Default timeout for checks
+  user_agent: "Watchdog/1.0"       # User agent for HTTP requests
+
+# Alerting Configuration
+alerting:
+  evaluation_interval: "30s"        # How often to evaluate alert rules
+  group_wait: "10s"                 # Time to wait for grouping alerts
+  group_interval: "5m"              # Time between alert group notifications
+  repeat_interval: "4h"             # Time before repeating notifications
+
+# Security Configuration
+security:
+  # Authentication Configuration
+  auth:
+    enabled: false                  # Enable authentication
+    type: "basic"                   # Auth type: basic, jwt, oauth
+    token_ttl: "24h"               # Token time-to-live
+
+    # Basic Auth Configuration
+    basic:
+      username: "admin"
+      password: "password"
+
+    # JWT Configuration
+    jwt:
+      secret: ""                    # JWT signing secret
+      issuer: "watchdog"
+      audience: []
+
+  # Rate Limiting Configuration
+  rate_limit:
+    enabled: true
+    rate: 100.0                     # Requests per second
+    burst: 200                      # Burst capacity
+
+  # Session Configuration
+  session_secret: ""                # Session secret (auto-generated if empty)
+
+# Logging Configuration
+logging:
+  level: "info"                     # Log level: debug, info, warn, error
+  format: "json"                    # Log format: json, text
+  output: "stdout"                  # Log output: stdout, stderr, file
+  file: ""                          # Log file path (when output = "file")
+
+# Notification Channels (examples)
+# notifications:
+#   email:
+#     enabled: false
+#     smtp_host: "smtp.gmail.com"
+#     smtp_port: 587
+#     username: "your-email@gmail.com"
+#     password: "your-app-password"
+#     from: "watchdog@example.com"
+#
+#   telegram:
+#     enabled: false
+#     bot_token: "your-bot-token"
+#     chat_id: "your-chat-id"
+#
+#   slack:
+#     enabled: false
+#     webhook_url: "https://hooks.slack.com/services/..."
+#
+#   webhook:
+#     enabled: false
+#     url: "https://your-webhook.com/endpoint"
+#     headers:
+#       Authorization: "Bearer your-token"
+
+# Monitor Templates (examples)
+# templates:
+#   - name: "web-service"
+#     description: "Standard web service monitoring"
+#     type: "http"
+#     parameters:
+#       - name: "url"
+#         description: "Service URL"
+#         required: true
+#       - name: "interval"
+#         description: "Check interval"
+#         default: "1m"
+#     config:
+#       url: "{{.url}}"
+#       method: "GET"
+#       timeout: "10s"
+#       interval: "{{.interval}}"
+#       expected_status: 200
