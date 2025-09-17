@@ -105,3 +105,9 @@ config.local.*
 
 # Test coverage
 profile.out
+
+# Binary files
+watchdog
+watchdog-agent
+!cmd/watchdog
+!cmd/watchdog-agent

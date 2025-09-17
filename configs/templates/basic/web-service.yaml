@@ -1,0 +1,138 @@
+# Web Service Monitoring Template
+# Template for monitoring standard web services and APIs
+
+name: "web-service"
+version: "1.0"
+description: "Standard web service monitoring with HTTP health checks"
+category: "basic"
+author: "Watchdog Team"
+
+# Template parameters that users can customize
+parameters:
+  - name: "url"
+    type: "string"
+    description: "URL to monitor (including protocol)"
+    required: true
+    example: "https://api.example.com/health"
+    validation: "^https?://.+"
+
+  - name: "name"
+    type: "string"
+    description: "Display name for the monitor"
+    required: true
+    example: "My API Service"
+
+  - name: "interval"
+    type: "duration"
+    description: "How often to check the service"
+    default: "1m"
+    example: "30s"
+
+  - name: "timeout"
+    type: "duration"
+    description: "Request timeout"
+    default: "10s"
+    example: "5s"
+
+  - name: "expected_status"
+    type: "integer"
+    description: "Expected HTTP status code"
+    default: 200
+    example: 200
+
+  - name: "expected_body"
+    type: "string"
+    description: "Expected response body content (optional)"
+    required: false
+    example: "OK"
+
+  - name: "follow_redirects"
+    type: "boolean"
+    description: "Follow HTTP redirects"
+    default: true
+
+  - name: "user_agent"
+    type: "string"
+    description: "User agent string for requests"
+    default: "Watchdog Health Check"
+
+# Monitor configuration template
+monitor:
+  name: "{{.name}}"
+  type: "http"
+  enabled: true
+  interval: "{{.interval}}"
+  timeout: "{{.timeout}}"
+
+  config:
+    url: "{{.url}}"
+    method: "GET"
+    expected_status: {{.expected_status}}
+    {{- if .expected_body}}
+    expected_body: "{{.expected_body}}"
+    {{- end}}
+    follow_redirects: {{.follow_redirects}}
+    headers:
+      User-Agent: "{{.user_agent}}"
+
+    # TLS settings
+    verify_ssl: true
+    ssl_cert_expiry_warning: "7d"  # Warn 7 days before cert expires
+
+# Default alert rules
+alerts:
+  - name: "Service Down"
+    condition: "status != 'up'"
+    severity: "critical"
+    message: "{{.name}} is down ({{.url}})"
+    description: "The service is not responding or returning an error"
+
+  - name: "High Response Time"
+    condition: "response_time > 5000"  # 5 seconds
+    severity: "warning"
+    message: "{{.name}} has high response time: {{.response_time}}ms"
+    description: "Service response time is above 5 seconds"
+
+  - name: "SSL Certificate Expiring"
+    condition: "ssl_cert_expiry_days < 7"
+    severity: "warning"
+    message: "SSL certificate for {{.name}} expires in {{.ssl_cert_expiry_days}} days"
+    description: "SSL certificate is expiring soon"
+
+# Tags for categorization
+tags:
+  - "web-service"
+  - "http"
+  - "api"
+  - "basic"
+
+# Usage examples
+examples:
+  - name: "Simple API Health Check"
+    description: "Basic health check for a REST API"
+    parameters:
+      url: "https://api.example.com/health"
+      name: "Example API"
+      interval: "1m"
+      timeout: "10s"
+      expected_status: 200
+      expected_body: "OK"
+
+  - name: "Website Monitoring"
+    description: "Monitor a website homepage"
+    parameters:
+      url: "https://www.example.com"
+      name: "Example Website"
+      interval: "5m"
+      timeout: "15s"
+      expected_status: 200
+      follow_redirects: true
+
+  - name: "Microservice Endpoint"
+    description: "Monitor a microservice endpoint"
+    parameters:
+      url: "https://user-service.internal.com/status"
+      name: "User Service"
+      interval: "30s"
+      timeout: "5s"
+      expected_status: 200

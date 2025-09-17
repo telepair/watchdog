@@ -1,0 +1,221 @@
+# Stock Price Monitoring Template
+# Template for monitoring stock prices and market data
+
+name: "stock-price"
+version: "1.0"
+description: "Monitor stock prices with configurable thresholds and alerts"
+category: "finance"
+author: "Watchdog Team"
+
+# Template parameters
+parameters:
+  - name: "symbol"
+    type: "string"
+    description: "Stock symbol to monitor (e.g., AAPL, GOOGL)"
+    required: true
+    example: "AAPL"
+    validation: "^[A-Z]{1,5}$"
+
+  - name: "name"
+    type: "string"
+    description: "Display name for the stock"
+    required: true
+    example: "Apple Inc."
+
+  - name: "interval"
+    type: "duration"
+    description: "How often to check the stock price"
+    default: "5m"
+    example: "1m"
+
+  - name: "api_key"
+    type: "string"
+    description: "API key for stock data provider"
+    required: true
+    sensitive: true
+    example: "your-api-key-here"
+
+  - name: "provider"
+    type: "string"
+    description: "Stock data provider"
+    default: "alphavantage"
+    options: ["alphavantage", "finnhub", "iex"]
+
+  - name: "price_threshold_high"
+    type: "float"
+    description: "Alert when price goes above this value"
+    required: false
+    example: 200.00
+
+  - name: "price_threshold_low"
+    type: "float"
+    description: "Alert when price goes below this value"
+    required: false
+    example: 150.00
+
+  - name: "change_threshold_percent"
+    type: "float"
+    description: "Alert when price changes by this percentage"
+    default: 5.0
+    example: 3.0
+
+  - name: "market_hours_only"
+    type: "boolean"
+    description: "Only monitor during market hours"
+    default: true
+
+# Monitor configuration
+monitor:
+  name: "{{.name}} ({{.symbol}})"
+  type: "http"
+  enabled: true
+  interval: "{{.interval}}"
+  timeout: "30s"
+
+  config:
+    {{- if eq .provider "alphavantage"}}
+    url: "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={{.symbol}}&apikey={{.api_key}}"
+    {{- else if eq .provider "finnhub"}}
+    url: "https://finnhub.io/api/v1/quote?symbol={{.symbol}}&token={{.api_key}}"
+    {{- else if eq .provider "iex"}}
+    url: "https://cloud.iexapis.com/stable/stock/{{.symbol}}/quote?token={{.api_key}}"
+    {{- end}}
+    method: "GET"
+    expected_status: 200
+    headers:
+      User-Agent: "Watchdog Stock Monitor"
+
+    # Response parsing configuration
+    {{- if eq .provider "alphavantage"}}
+    json_path: "Global Quote"
+    price_field: "05. price"
+    change_field: "09. change"
+    change_percent_field: "10. change percent"
+    {{- else if eq .provider "finnhub"}}
+    price_field: "c"
+    change_field: "d"
+    change_percent_field: "dp"
+    {{- else if eq .provider "iex"}}
+    price_field: "latestPrice"
+    change_field: "change"
+    change_percent_field: "changePercent"
+    {{- end}}
+
+    # Market hours configuration (Eastern Time)
+    {{- if .market_hours_only}}
+    schedule:
+      timezone: "America/New_York"
+      days: ["monday", "tuesday", "wednesday", "thursday", "friday"]
+      hours: "09:30-16:00"
+      holidays: ["2025-01-01", "2025-07-04", "2025-12-25"]  # Update annually
+    {{- end}}
+
+# Alert rules
+alerts:
+  - name: "Data Fetch Error"
+    condition: "status != 'up'"
+    severity: "error"
+    message: "Failed to fetch {{.symbol}} stock data from {{.provider}}"
+    description: "Unable to retrieve stock price data"
+
+  {{- if .price_threshold_high}}
+  - name: "Price Above Threshold"
+    condition: "current_price > {{.price_threshold_high}}"
+    severity: "warning"
+    message: "{{.symbol}} price is ${{.current_price}} (above threshold of ${{.price_threshold_high}})"
+    description: "Stock price has exceeded the high threshold"
+  {{- end}}
+
+  {{- if .price_threshold_low}}
+  - name: "Price Below Threshold"
+    condition: "current_price < {{.price_threshold_low}}"
+    severity: "warning"
+    message: "{{.symbol}} price is ${{.current_price}} (below threshold of ${{.price_threshold_low}})"
+    description: "Stock price has fallen below the low threshold"
+  {{- end}}
+
+  - name: "Large Price Movement"
+    condition: "abs(change_percent) > {{.change_threshold_percent}}"
+    severity: "info"
+    message: "{{.symbol}} has moved {{.change_percent}}% to ${{.current_price}}"
+    description: "Significant price movement detected"
+
+  - name: "Market Closed"
+    condition: "market_status == 'closed'"
+    severity: "info"
+    message: "{{.symbol}} - Market is closed, last price: ${{.current_price}}"
+    description: "Stock market is currently closed"
+    suppress_repeats: true
+
+# Metrics to collect
+metrics:
+  - name: "stock_price"
+    description: "Current stock price"
+    type: "gauge"
+    labels:
+      symbol: "{{.symbol}}"
+      name: "{{.name}}"
+
+  - name: "stock_change"
+    description: "Price change from previous close"
+    type: "gauge"
+    labels:
+      symbol: "{{.symbol}}"
+      name: "{{.name}}"
+
+  - name: "stock_change_percent"
+    description: "Percentage change from previous close"
+    type: "gauge"
+    labels:
+      symbol: "{{.symbol}}"
+      name: "{{.name}}"
+
+  - name: "stock_volume"
+    description: "Trading volume"
+    type: "gauge"
+    labels:
+      symbol: "{{.symbol}}"
+      name: "{{.name}}"
+
+# Tags
+tags:
+  - "finance"
+  - "stock"
+  - "market"
+  - "{{.symbol}}"
+
+# Usage examples
+examples:
+  - name: "Apple Stock Monitoring"
+    description: "Monitor Apple stock with price thresholds"
+    parameters:
+      symbol: "AAPL"
+      name: "Apple Inc."
+      interval: "5m"
+      provider: "alphavantage"
+      api_key: "YOUR_API_KEY"
+      price_threshold_high: 200.00
+      price_threshold_low: 150.00
+      change_threshold_percent: 3.0
+      market_hours_only: true
+
+  - name: "Tesla Stock Monitoring"
+    description: "Monitor Tesla stock during market hours"
+    parameters:
+      symbol: "TSLA"
+      name: "Tesla Inc."
+      interval: "1m"
+      provider: "finnhub"
+      api_key: "YOUR_API_KEY"
+      change_threshold_percent: 5.0
+      market_hours_only: true
+
+  - name: "SPY ETF Monitoring"
+    description: "Monitor S&P 500 ETF"
+    parameters:
+      symbol: "SPY"
+      name: "SPDR S&P 500 ETF"
+      interval: "10m"
+      provider: "iex"
+      api_key: "YOUR_API_KEY"
+      change_threshold_percent: 2.0
