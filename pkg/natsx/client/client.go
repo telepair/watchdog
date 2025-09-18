@@ -254,7 +254,7 @@ func (c *Client) PublishContext(ctx context.Context, subject string, data []byte
 	}
 
 	start := time.Now()
-	c.logger.DebugContext(context.Background(), "publishing data to subject", "subject", subject)
+	c.logger.DebugContext(ctx, "publishing data to subject", "subject", subject)
 
 	err := c.conn.Publish(subject, data)
 
@@ -272,6 +272,79 @@ func (c *Client) PublishContext(ctx context.Context, subject string, data []byte
 	}
 
 	return err
+}
+
+// Message represents a message to be published
+type Message struct {
+	Subject string
+	Data    []byte
+}
+
+// PublishBatch publishes multiple messages efficiently in a batch
+func (c *Client) PublishBatch(ctx context.Context, messages []Message) error {
+	return c.PublishBatchWithFlush(ctx, messages, true)
+}
+
+// PublishBatchWithFlush publishes multiple messages with optional flush control
+func (c *Client) PublishBatchWithFlush(ctx context.Context, messages []Message, flush bool) error {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	if err := c.CheckClientState(); err != nil {
+		return err
+	}
+
+	start := time.Now()
+	totalBytes := 0
+	errorCount := 0
+
+	// Validate all subjects first
+	for i, msg := range messages {
+		if err := ValidateSubject(msg.Subject); err != nil {
+			return c.ErrorWithMetrics(WrapValidationError(fmt.Sprintf("message[%d].subject", i), err))
+		}
+		totalBytes += len(msg.Data)
+	}
+
+	c.logger.DebugContext(ctx, "publishing batch messages",
+		"count", len(messages),
+		"total_bytes", totalBytes)
+
+	// Publish all messages without flushing each one
+	for _, msg := range messages {
+		if err := c.conn.Publish(msg.Subject, msg.Data); err != nil {
+			errorCount++
+			c.logger.WarnContext(ctx, "failed to publish message in batch",
+				"subject", msg.Subject,
+				"error", err)
+		}
+	}
+
+	// Single flush for all messages if requested
+	var flushErr error
+	if flush && errorCount < len(messages) {
+		flushErr = c.handleContextTimeout(ctx)
+	}
+
+	// Record metrics
+	if c.metrics != nil {
+		if errorCount > 0 {
+			c.metrics.RecordError()
+		}
+		if errorCount < len(messages) {
+			// Record successful publishes
+			c.metrics.RecordPublish(totalBytes, time.Since(start))
+		}
+	}
+
+	if errorCount == len(messages) {
+		return fmt.Errorf("all %d messages failed to publish", len(messages))
+	} else if errorCount > 0 {
+		return fmt.Errorf("%d out of %d messages failed to publish", errorCount, len(messages))
+	}
+
+	return flushErr
 }
 
 // handleContextTimeout handles context timeout and flushing logic.
@@ -452,4 +525,50 @@ func (c *Client) GetMetrics() *Metrics {
 // IsMetricsEnabled returns whether metrics collection is enabled.
 func (c *Client) IsMetricsEnabled() bool {
 	return c.metrics != nil
+}
+
+// CreateKVManager creates a new KV manager with the given bucket configuration.
+func (c *Client) CreateKVManager(config BucketConfig) (*KVManager, error) {
+	if err := c.CheckClientState(); err != nil {
+		return nil, err
+	}
+	return NewKVManager(c.js, config)
+}
+
+// PutKV stores a key-value pair in the specified bucket.
+func (c *Client) PutKV(ctx context.Context, bucketName, key string, value []byte) error {
+	if err := c.CheckClientState(); err != nil {
+		return err
+	}
+
+	kv, err := c.js.KeyValue(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("failed to get KV bucket %s: %w", bucketName, err)
+	}
+
+	_, err = kv.Put(ctx, key, value)
+	if err != nil {
+		return fmt.Errorf("failed to put key-value pair: %w", err)
+	}
+
+	return nil
+}
+
+// GetKV retrieves a value by key from the specified bucket.
+func (c *Client) GetKV(ctx context.Context, bucketName, key string) ([]byte, error) {
+	if err := c.CheckClientState(); err != nil {
+		return nil, err
+	}
+
+	kv, err := c.js.KeyValue(ctx, bucketName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get KV bucket %s: %w", bucketName, err)
+	}
+
+	entry, err := kv.Get(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get key-value pair: %w", err)
+	}
+
+	return entry.Value(), nil
 }

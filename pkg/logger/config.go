@@ -81,7 +81,7 @@ func DefaultConfig() Config {
 // Validate validates the configuration.
 func (c *Config) Validate() error {
 	if c.Console.Enabled {
-		if _, err := c.Console.Level.toSlogLevel(); err != nil {
+		if _, err := Level(c.Console.Level).ToSlogLevel(); err != nil {
 			return fmt.Errorf("invalid console log level: %w", err)
 		}
 		if c.Console.Format != FormatText && c.Console.Format != FormatJSON {
@@ -92,12 +92,29 @@ func (c *Config) Validate() error {
 	return c.File.Validate()
 }
 
+func (c *Config) SetLevel(level string) error {
+	if level == "" {
+		return nil
+	}
+	if _, err := Level(level).ToSlogLevel(); err != nil {
+		return fmt.Errorf("invalid log level: %w", err)
+	}
+
+	if c.Console.Enabled {
+		c.Console.Level = Level(level)
+	}
+	if c.File.Enabled {
+		c.File.Level = Level(level)
+	}
+	return nil
+}
+
 // Validate validates the file configuration.
 func (fc *FileConfig) Validate() error {
 	if !fc.Enabled {
 		return nil
 	}
-	if _, err := fc.Level.toSlogLevel(); err != nil {
+	if _, err := Level(fc.Level).ToSlogLevel(); err != nil {
 		return fmt.Errorf("invalid file log level: %w", err)
 	}
 	if fc.Format != FormatText && fc.Format != FormatJSON {
@@ -118,8 +135,8 @@ func (fc *FileConfig) Validate() error {
 	return nil
 }
 
-// toSlogLevel converts Level to slog.Level.
-func (l Level) toSlogLevel() (slog.Level, error) {
+// ToSlogLevel converts Level to slog.Level.
+func (l Level) ToSlogLevel() (slog.Level, error) {
 	switch strings.ToLower(string(l)) {
 	case "debug":
 		return slog.LevelDebug, nil
