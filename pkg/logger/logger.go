@@ -18,7 +18,7 @@ func New(config Config) (*slog.Logger, error) {
 
 	// Console handler
 	if config.Console.Enabled {
-		consoleLevel, _ := config.Console.Level.toSlogLevel()
+		consoleLevel, _ := config.Console.Level.ToSlogLevel()
 
 		var consoleHandler slog.Handler
 		switch config.Console.Format {
@@ -36,7 +36,7 @@ func New(config Config) (*slog.Logger, error) {
 
 	// File handler
 	if config.File.Enabled {
-		fileLevel, _ := config.File.Level.toSlogLevel()
+		fileLevel, _ := config.File.Level.ToSlogLevel()
 
 		fileWriter := &lumberjack.Logger{
 			Filename:   config.File.Filename,
