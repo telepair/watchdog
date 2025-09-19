@@ -27,9 +27,19 @@ type SystemInfo struct {
 
 // CollectSystemInfo collects basic system information
 func CollectSystemInfo(ctx context.Context) (*SystemInfo, error) {
+	// Check if context is already cancelled
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	hostInfo, err := host.InfoWithContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get host info: %w", err)
+	}
+
+	// Check context again between potentially slow operations
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	vmStat, err := mem.VirtualMemoryWithContext(ctx)
