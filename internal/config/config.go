@@ -6,6 +6,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/telepair/watchdog/internal/agent"
+	"github.com/telepair/watchdog/internal/collector"
 	"github.com/telepair/watchdog/pkg/health"
 	"github.com/telepair/watchdog/pkg/logger"
 	"github.com/telepair/watchdog/pkg/natsx/client"
@@ -14,67 +16,52 @@ import (
 
 var defaultShutdownTimeoutSec = 10
 
-// Common event types
-const (
-	EventTypeStartup    = "startup"
-	EventTypeShutdown   = "shutdown"
-	EventTypeRestart    = "restart"
-	EventTypeConfigured = "configured"
-	EventTypeHeartbeat  = "heartbeat"
-)
-
-// Common execution types
-const (
-	ExecTypeCommand = "cmd"
-	ExecTypeScript  = "script"
-	ExecTypeTask    = "task"
-	ExecTypeJob     = "job"
-)
-
 // Config holds the common configuration for all server types
 type Config struct {
-	Server             ServerConfig  `yaml:"server" json:"server"`
-	Agent              AgentConfig   `yaml:"agent"  json:"agent"`
-	Storage            StorageConfig `yaml:"storage" json:"storage"`
-	NATS               client.Config `yaml:"nats"   json:"nats"`
-	Health             health.Config `yaml:"health" json:"health"`
-	Logger             logger.Config `yaml:"logger" json:"logger"`
-	ShutdownTimeoutSec int           `yaml:"shutdown_timeout_sec" json:"shutdown_timeout_sec"`
+	Server             ServerConfig     `yaml:"server" json:"server"`
+	Agent              agent.Config     `yaml:"agent"  json:"agent"`
+	Collector          collector.Config `yaml:"collector" json:"collector"`
+	NATS               client.Config    `yaml:"nats"   json:"nats"`
+	Logger             logger.Config    `yaml:"logger" json:"logger"`
+	HealthAddr         string           `yaml:"health_addr" json:"health_addr"`
+	ShutdownTimeoutSec int              `yaml:"shutdown_timeout_sec" json:"shutdown_timeout_sec"`
 }
 
 // DefaultConfig returns a configuration for watchdog
 func DefaultConfig() *Config {
 	cfg := &Config{
-		Server:  DefaultServerConfig(),
-		Agent:   DefaultAgentConfig(),
-		Storage: DefaultStorageConfig(),
-		NATS:    *client.DefaultConfig(),
-		Health:  *health.DefaultConfig(),
-		Logger:  logger.DefaultConfig(),
+		Server:     DefaultServerConfig(),
+		Agent:      agent.DefaultConfig(),
+		Collector:  collector.DefaultConfig(),
+		NATS:       *client.DefaultConfig(),
+		HealthAddr: health.DefaultAddr,
+		Logger:     logger.DefaultConfig(),
 	}
-	cfg.SetDefaults()
+	if err := cfg.Parse(); err != nil {
+		panic(err)
+	}
 	return cfg
 }
 
-// Validate validates the configuration
-func (c *Config) Validate() error {
-	if err := c.Server.Validate(); err != nil {
+// Parse parses the configuration
+func (c *Config) Parse() error {
+	if err := c.Server.Parse(); err != nil {
 		return fmt.Errorf("invalid server config: %w", err)
 	}
 
-	if err := c.Agent.Validate(); err != nil {
+	if err := c.Agent.Parse(); err != nil {
 		return fmt.Errorf("invalid agent config: %w", err)
 	}
 
-	if err := c.Storage.Validate(); err != nil {
-		return fmt.Errorf("invalid storage config: %w", err)
+	if err := c.Collector.Parse(); err != nil {
+		return fmt.Errorf("invalid collector config: %w", err)
 	}
 
 	if err := c.NATS.Validate(); err != nil {
 		return fmt.Errorf("invalid nats config: %w", err)
 	}
 
-	if err := c.Health.Parse(); err != nil {
+	if err := utils.ValidateAddr(c.HealthAddr); err != nil {
 		return fmt.Errorf("invalid health config: %w", err)
 	}
 
@@ -82,17 +69,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid logger config: %w", err)
 	}
 
-	return nil
-}
-
-// SetDefaults sets default values for the configuration
-func (c *Config) SetDefaults() {
-	c.Server.SetDefaults()
-	c.Agent.SetDefaults()
-	c.Storage.SetDefaults()
 	if c.ShutdownTimeoutSec <= 0 {
 		c.ShutdownTimeoutSec = defaultShutdownTimeoutSec
 	}
+	return nil
 }
 
 // LoadConfig loads configuration from a file, or returns default config if file doesn't exist
@@ -121,8 +101,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	// Apply defaults and validate
-	config.SetDefaults()
-	if err := config.Validate(); err != nil {
+	if err := config.Parse(); err != nil {
 		return nil, fmt.Errorf("invalid config in %s: %w", configPath, err)
 	}
 

@@ -1,7 +1,13 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"strings"
+
 	"github.com/spf13/cobra"
+	"github.com/telepair/watchdog/internal/config"
+	"github.com/telepair/watchdog/pkg/utils"
 )
 
 var (
@@ -31,4 +37,46 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newConfigCommand())
 
 	return cmd
+}
+
+func loadConfig() (*config.Config, error) {
+	configPath, err := utils.ExpandPath(ConfigFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand config file path: %w", err)
+	}
+
+	// Check if file already exists
+	if _, err := os.Stat(configPath); err != nil {
+		return nil, fmt.Errorf("configuration file %s does not exist", configPath)
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if err := processConfig(cfg); err != nil {
+		return nil, fmt.Errorf("failed to process config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func processConfig(cfg *config.Config) error {
+	if err := cfg.Parse(); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+	if LogLevel != "" {
+		if err := cfg.Logger.SetLevel(LogLevel); err != nil {
+			return fmt.Errorf("failed to set log level: %w", err)
+		}
+	}
+	if NatsURL != "" {
+		cfg.NATS.URLs = []string{NatsURL}
+	}
+
+	subjectPrefix := strings.TrimRight(cfg.Collector.AgentSubjectPrefix, ".>")
+	subjectPrefix = strings.TrimRight(subjectPrefix, ".") + ".>"
+	cfg.Collector.AgentStream.Subjects = []string{subjectPrefix}
+	return nil
 }

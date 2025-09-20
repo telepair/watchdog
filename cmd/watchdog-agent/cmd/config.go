@@ -33,7 +33,7 @@ func newConfigShowCommand() *cobra.Command {
 		Short: "Show current configuration",
 		Long:  "Display the current configuration with all resolved values",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.LoadConfig(ConfigFile)
+			cfg, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
@@ -52,7 +52,7 @@ func newConfigShowCommand() *cobra.Command {
 				fmt.Printf("NATS URLs: %v\n", cfg.NATS.URLs)
 				fmt.Printf("Console Log Level: %s\n", cfg.Logger.Console.Level)
 				fmt.Printf("File Log Level: %s\n", cfg.Logger.File.Level)
-				fmt.Printf("Health Check Address: %s\n", cfg.Health.Addr)
+				fmt.Printf("Health Check Address: %s\n", cfg.HealthAddr)
 			default:
 				return fmt.Errorf("unsupported format: %s", format)
 			}
@@ -72,13 +72,9 @@ func newConfigValidateCommand() *cobra.Command {
 		Short: "Validate configuration file",
 		Long:  "Check if the configuration file is valid and properly formatted",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.LoadConfig(ConfigFile)
+			_, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("invalid configuration: %w", err)
-			}
-
-			if err := cfg.Validate(); err != nil {
-				return fmt.Errorf("configuration validation failed: %w", err)
 			}
 
 			fmt.Printf("Configuration file %s is valid\n", ConfigFile)
@@ -107,6 +103,9 @@ func newConfigInitCommand() *cobra.Command {
 
 			// Generate default config for agent
 			cfg := config.DefaultConfig()
+			if err := processConfig(cfg); err != nil {
+				return fmt.Errorf("failed to process config: %w", err)
+			}
 
 			// Marshal to YAML
 			data, err := yaml.Marshal(cfg)

@@ -7,13 +7,13 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	healthCheckDebugLogInterval = 5 * time.Minute
-	consecutiveFailureThreshold = 3
-	healthCheckMinInterval      = 1 * time.Second
+	healthCheckMinInterval = 1 * time.Second
+	shutdownTimeout        = 5 * time.Second
 
 	// Health check status constants.
 	healthStatusOK   = "ok"
@@ -27,7 +27,6 @@ type Manager struct {
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
-	logger   *slog.Logger
 }
 
 // NewHealthManager creates a new HealthManager.
@@ -37,7 +36,6 @@ func NewHealthManager() *Manager {
 		checkers: make(map[string]*registeredChecker),
 		ctx:      ctx,
 		cancel:   cancel,
-		logger:   slog.Default().With("component", "health.manager"),
 	}
 }
 
@@ -55,7 +53,7 @@ func (h *Manager) RegisterChecker(name string, interval time.Duration, fn CheckF
 	}
 	requestedInterval := interval
 	if interval < healthCheckMinInterval {
-		h.logger.Warn("checker interval is less than the minimum interval, using minimum interval",
+		slog.Warn("health checker interval is less than the minimum interval, using minimum interval",
 			"name", name,
 			"requested_interval", requestedInterval.String(),
 			"minimum_interval", healthCheckMinInterval.String())
@@ -63,18 +61,23 @@ func (h *Manager) RegisterChecker(name string, interval time.Duration, fn CheckF
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if _, exists := h.checkers[name]; exists {
+		h.mu.Unlock()
+		slog.Error("health checker already exists", "name", name)
 		return fmt.Errorf("checker %q already exists", name)
 	}
 
-	rc := &registeredChecker{fn: fn, interval: interval, lastState: "unknown"}
+	rc := &registeredChecker{name: name, fn: fn}
 	h.checkers[name] = rc
+	h.mu.Unlock()
 
-	h.wg.Go(func() { h.runChecker(name, rc) })
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		h.runChecker(name, interval, rc)
+	}()
 
-	h.logger.Info("registered health checker",
+	slog.Info("registered health checker",
 		"name", name,
 		"interval", interval.String(),
 		"requested_interval", requestedInterval.String())
@@ -83,6 +86,11 @@ func (h *Manager) RegisterChecker(name string, interval time.Duration, fn CheckF
 
 // GetHealthStatus returns the latest state of all registered checkers.
 func (h *Manager) GetHealthStatus() (map[string]string, bool) {
+	return h.HealthStatus()
+}
+
+// HealthStatus returns the latest state of all registered checkers.
+func (h *Manager) HealthStatus() (map[string]string, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -94,15 +102,9 @@ func (h *Manager) GetHealthStatus() (map[string]string, bool) {
 	anyFail := false
 
 	for name, c := range h.checkers {
-		state := "unknown"
-		if c == nil {
-			state = "skipped"
-		} else if c.lastState != "" {
-			state = c.lastState
-		}
-
-		results[name] = state
-		if state == healthStatusFail {
+		results[name] = healthStatusOK
+		if lastErr := c.lastError.Load(); lastErr != nil {
+			results[name] = healthStatusFail
 			anyFail = true
 		}
 	}
@@ -112,6 +114,13 @@ func (h *Manager) GetHealthStatus() (map[string]string, bool) {
 
 // Stop stops all health checkers.
 func (h *Manager) Stop(ctx context.Context) error {
+	_ = ctx // context is passed but not used in this implementation
+	return h.StopNoContext()
+}
+
+// StopNoContext stops all health checkers without context.
+func (h *Manager) StopNoContext() error {
+	slog.Info("stopping health manager")
 	if h.cancel != nil {
 		h.cancel()
 	}
@@ -124,192 +133,55 @@ func (h *Manager) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
+		slog.Info("health manager stopped")
 		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("health manager shutdown timeout: %w", ctx.Err())
+	case <-time.After(shutdownTimeout):
+		return fmt.Errorf("health manager shutdown timeout")
 	}
 }
 
 // runChecker executes one checker periodically until context is canceled.
-func (h *Manager) runChecker(name string, c *registeredChecker) {
-	// run once immediately
-	h.logger.Debug("checker tick", "name", name, "phase", "initial")
-	h.executeChecker(name, c)
+func (h *Manager) runChecker(name string, interval time.Duration, c *registeredChecker) {
+	if c == nil {
+		return
+	}
 
-	ticker := time.NewTicker(c.interval)
+	slog.Debug("health checker loop started", "name", name)
+	c.Run()
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-h.ctx.Done():
-			// Final tick on cancellation:
-			// Give the checker one last chance to observe context cancellation and
-			// update its state before shutdown. This happens at most once.
-			if c != nil && !c.cancelSeen {
-				h.logger.Debug("checker tick", "name", name, "phase", "final")
-				h.executeChecker(name, c)
-			}
+			slog.Debug("health checker loop stopped", "name", name)
 			return
 		case <-ticker.C:
-			h.logger.Debug("checker tick", "name", name, "phase", "periodic")
-			h.executeChecker(name, c)
+			c.Run()
 		}
 	}
-}
-
-// executeChecker runs a single checker and updates its last state.
-func (h *Manager) executeChecker(name string, c *registeredChecker) {
-	if c == nil || c.fn == nil {
-		h.markCheckerSkipped(name)
-		return
-	}
-
-	err := c.fn(h.ctx)
-	result := h.updateCheckerState(name, err)
-	h.logCheckerResult(name, c, result)
 }
 
 // CheckFunc defines a checker function that returns error when unhealthy.
-type CheckFunc func(ctx context.Context) error
+type CheckFunc func() error
 
 // registeredChecker holds checker settings and last result.
 type registeredChecker struct {
-	fn               CheckFunc
-	interval         time.Duration
-	lastState        string
-	lastRun          time.Time
-	cancelSeen       bool
-	lastLogTime      time.Time // for rate limiting debug logs
-	consecutiveFails int       // track consecutive failures for better logging
+	name      string
+	fn        CheckFunc
+	lastError atomic.Pointer[error]
+	lastRun   time.Time
 }
 
-// checkerResult holds the result of a checker execution.
-type checkerResult struct {
-	prevState        string
-	newState         string
-	prevLastRun      time.Time
-	now              time.Time
-	consecutiveFails int
-	shouldLogDebug   bool
-	err              error
-}
-
-// markCheckerSkipped marks a checker as skipped.
-func (h *Manager) markCheckerSkipped(name string) {
-	h.mu.Lock()
-	if existing, ok := h.checkers[name]; ok && existing != nil {
-		existing.lastState = "skipped"
-		existing.lastRun = time.Now()
-	}
-	h.mu.Unlock()
-	h.logger.Debug("checker skipped", "name", name)
-}
-
-// updateCheckerState updates the checker state and returns the result.
-func (h *Manager) updateCheckerState(name string, err error) *checkerResult {
-	now := time.Now()
-	result := &checkerResult{now: now, err: err}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	existing, ok := h.checkers[name]
-	if !ok || existing == nil {
-		return result
-	}
-
-	result.prevState = existing.lastState
-	result.prevLastRun = existing.lastRun
-
-	if err != nil {
-		result.newState = healthStatusFail
-		existing.consecutiveFails++
+func (r *registeredChecker) Run() {
+	slog.Debug("running health checker", "name", r.name)
+	if err := r.fn(); err != nil {
+		r.lastError.Store(&err)
+		slog.Error("health checker failed", "name", r.name, "error", err)
 	} else {
-		result.newState = healthStatusOK
-		existing.consecutiveFails = 0
+		slog.Debug("health checker passed", "name", r.name)
+		r.lastError.Store(nil)
 	}
-
-	existing.lastState = result.newState
-	if h.ctx.Err() != nil {
-		existing.cancelSeen = true
-	}
-	existing.lastRun = now
-	result.consecutiveFails = existing.consecutiveFails
-
-	// Rate limiting for debug logs
-	result.shouldLogDebug = now.Sub(existing.lastLogTime) >= healthCheckDebugLogInterval
-	if result.shouldLogDebug && (result.prevState == result.newState) {
-		existing.lastLogTime = now
-	}
-
-	return result
-}
-
-// logCheckerResult logs the checker execution result.
-func (h *Manager) logCheckerResult(name string, c *registeredChecker, result *checkerResult) {
-	if result.newState == "" {
-		return
-	}
-
-	baseFields := h.buildLogFields(name, c, result)
-	if result.prevState != result.newState {
-		h.logStateTransition(result, baseFields)
-	} else {
-		h.logSteadyState(result, baseFields)
-	}
-}
-
-// buildLogFields constructs common log fields for checker results.
-func (h *Manager) buildLogFields(name string, c *registeredChecker, result *checkerResult) []any {
-	duration := time.Duration(0)
-	if !result.prevLastRun.IsZero() {
-		duration = result.now.Sub(result.prevLastRun)
-	}
-
-	return []any{
-		"name", name,
-		"interval", c.interval.String(),
-		"duration", duration.String(),
-	}
-}
-
-// logStateTransition logs health check state changes.
-func (h *Manager) logStateTransition(result *checkerResult, baseFields []any) {
-	if result.newState == healthStatusFail {
-		h.logger.Warn(
-			"health check state changed to failing",
-			append(
-				baseFields,
-				"from",
-				result.prevState,
-				"to",
-				result.newState,
-				"consecutive_failures",
-				result.consecutiveFails,
-				"error",
-				result.err.Error(),
-			)...)
-	} else {
-		h.logger.Info("health check recovered",
-			append(baseFields, "from", result.prevState, "to", result.newState, "previous_failures", result.consecutiveFails)...)
-	}
-}
-
-// logSteadyState logs health check steady state with rate limiting.
-func (h *Manager) logSteadyState(result *checkerResult, baseFields []any) {
-	if !result.shouldLogDebug {
-		return
-	}
-
-	if result.newState == healthStatusFail {
-		if result.consecutiveFails >= consecutiveFailureThreshold {
-			h.logger.Warn("health check persistently failing",
-				append(baseFields, "consecutive_failures", result.consecutiveFails, "error", result.err.Error())...)
-		} else {
-			h.logger.Debug("health check failing",
-				append(baseFields, "consecutive_failures", result.consecutiveFails, "error", result.err.Error())...)
-		}
-	} else {
-		h.logger.Debug("health check passing", baseFields...)
-	}
+	r.lastRun = time.Now()
 }

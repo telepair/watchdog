@@ -1,7 +1,6 @@
 package health
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 )
@@ -15,10 +14,6 @@ func TestNewReadinessManager(t *testing.T) {
 
 	if rm.IsReady() {
 		t.Error("expected initial ready state to be false")
-	}
-
-	if rm.logger == nil {
-		t.Error("expected logger to be initialized")
 	}
 
 	if rm.startTime.IsZero() {
@@ -195,20 +190,6 @@ func TestReadinessManager_AtomicOperations(t *testing.T) {
 	}
 }
 
-func TestReadinessManager_LoggerComponent(t *testing.T) {
-	rm := NewReadinessManager()
-
-	if rm.logger == nil {
-		t.Fatal("expected logger to be initialized")
-	}
-
-	// Verify logger has correct component attribute by checking if it's not the default logger
-	defaultLogger := slog.Default()
-	if rm.logger == defaultLogger {
-		t.Error("expected logger to be different from default logger (should have component attribute)")
-	}
-}
-
 func BenchmarkReadinessManager_IsReady(b *testing.B) {
 	rm := NewReadinessManager()
 	rm.SetReady(true)
@@ -235,6 +216,56 @@ func BenchmarkReadinessManager_ConcurrentIsReady(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			_ = rm.IsReady()
+		}
+	})
+}
+
+func BenchmarkReadinessManager_SetReady(b *testing.B) {
+	rm := NewReadinessManager()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rm.SetReady(i%2 == 0)
+	}
+}
+
+func BenchmarkReadinessManager_ConcurrentSetReady(b *testing.B) {
+	rm := NewReadinessManager()
+
+	b.RunParallel(func(pb *testing.PB) {
+		ready := true
+		for pb.Next() {
+			rm.SetReady(ready)
+			ready = !ready
+		}
+	})
+}
+
+func BenchmarkReadinessManager_ConcurrentGetUptime(b *testing.B) {
+	rm := NewReadinessManager()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = rm.GetUptime()
+		}
+	})
+}
+
+func BenchmarkReadinessManager_MixedOperations(b *testing.B) {
+	rm := NewReadinessManager()
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			switch i % 3 {
+			case 0:
+				_ = rm.IsReady()
+			case 1:
+				rm.SetReady(i%2 == 0)
+			case 2:
+				_ = rm.GetUptime()
+			}
+			i++
 		}
 	})
 }

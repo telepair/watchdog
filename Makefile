@@ -46,7 +46,7 @@ bench:
 build: build-watchdog build-agent
 
 # Build watchdog binary
-build-watchdog:
+build-watchdog: lint test
 	@echo "🔨 Building watchdog binary..."
 	@echo "Version: $(VERSION), Commit: $(COMMIT)"
 	@mkdir -p build
@@ -54,7 +54,7 @@ build-watchdog:
 	@echo "✅ Build completed: build/watchdog\n"
 
 # Build watchdog-agent binary
-build-agent:
+build-agent: lint test
 	@echo "🔨 Building watchdog-agent binary..."
 	@echo "Version: $(VERSION), Commit: $(COMMIT)"
 	@mkdir -p build

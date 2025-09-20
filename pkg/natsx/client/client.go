@@ -1,14 +1,13 @@
 package client
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -89,25 +88,16 @@ func DefaultConfig() *Config {
 
 // Client wraps a NATS connection with JetStream support.
 type Client struct {
-	name          string
-	conn          *nats.Conn
-	js            jetstream.JetStream
-	config        *Config
-	logger        *slog.Logger
-	mu            sync.RWMutex
-	closed        bool
-	subscriptions []*nats.Subscription
-	subMu         sync.RWMutex
-	metrics       *Metrics
+	name   string
+	config *Config
+	conn   *nats.Conn
+	js     jetstream.JetStream
+	closed atomic.Bool
+	logger *slog.Logger
 }
 
 // NewClient creates a new NATS client.
 func NewClient(config *Config) (*Client, error) {
-	return NewClientWithMetrics(config, nil)
-}
-
-// NewClientWithMetrics creates a new NATS client with optional metrics collector.
-func NewClientWithMetrics(config *Config, metricsCollector MetricsCollector) (*Client, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -117,10 +107,9 @@ func NewClientWithMetrics(config *Config, metricsCollector MetricsCollector) (*C
 	}
 
 	client := &Client{
-		name:    config.Name,
-		config:  config,
-		logger:  slog.Default().With("component", "natsx.client"),
-		metrics: createMetrics(metricsCollector, config.Name),
+		name:   config.Name,
+		config: config,
+		logger: slog.Default().With("component", "natsx.client"),
 	}
 
 	optionsBuilder := NewOptionsBuilder(client)
@@ -134,14 +123,6 @@ func NewClientWithMetrics(config *Config, metricsCollector MetricsCollector) (*C
 	}
 
 	return client, nil
-}
-
-// createMetrics initializes metrics collector or noop collector.
-func createMetrics(metricsCollector MetricsCollector, clientName string) *Metrics {
-	if metricsCollector != nil {
-		return NewMetrics(metricsCollector, clientName)
-	}
-	return NewNoopMetrics(clientName)
 }
 
 // connectToNATS establishes connection to NATS and creates JetStream context.
@@ -167,24 +148,14 @@ func (c *Client) connectToNATS(config *Config, opts []nats.Option) error {
 	c.conn = nc
 	c.js = js
 
-	if c.metrics != nil {
-		c.metrics.RecordConnection()
-	}
-
 	return nil
 }
 
 // Close closes the NATS connection and cleans up resources.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
+	if c.closed.Load() {
 		return nil
 	}
-
-	// Close all subscriptions first
-	c.closeSubscriptions()
 
 	// Close the connection with timeout
 	if c.conn != nil {
@@ -207,12 +178,7 @@ func (c *Client) Close() error {
 		c.conn.Close()
 	}
 
-	// Update connection metrics
-	if c.metrics != nil {
-		c.metrics.RecordConnectionClosed()
-	}
-
-	c.closed = true
+	c.closed.Store(true)
 	c.logger.Debug("client closed")
 	return nil
 }
@@ -229,275 +195,10 @@ func (c *Client) JetStream() jetstream.JetStream {
 
 // IsConnected returns true if the client is connected to NATS.
 func (c *Client) IsConnected() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.closed || c.conn == nil {
+	if c.closed.Load() || c.conn == nil {
 		return false
 	}
 	return c.conn.IsConnected()
-}
-
-// Publish publishes data to the specified subject.
-func (c *Client) Publish(subject string, data []byte) error {
-	return c.PublishContext(context.Background(), subject, data)
-}
-
-// PublishContext publishes data with context, integrating metrics and tracing.
-func (c *Client) PublishContext(ctx context.Context, subject string, data []byte) error {
-	if err := ValidateSubject(subject); err != nil {
-		return c.ErrorWithMetrics(WrapValidationError("subject", err))
-	}
-
-	if err := c.CheckClientState(); err != nil {
-		return err
-	}
-
-	start := time.Now()
-	c.logger.DebugContext(ctx, "publishing data to subject", "subject", subject)
-
-	err := c.conn.Publish(subject, data)
-
-	// Honor context completion semantics (best effort)
-	if err == nil {
-		err = c.handleContextTimeout(ctx)
-	}
-
-	if c.metrics != nil {
-		if err != nil {
-			c.metrics.RecordError()
-		} else {
-			c.metrics.RecordPublish(len(data), time.Since(start))
-		}
-	}
-
-	return err
-}
-
-// Message represents a message to be published
-type Message struct {
-	Subject string
-	Data    []byte
-}
-
-// PublishBatch publishes multiple messages efficiently in a batch
-func (c *Client) PublishBatch(ctx context.Context, messages []Message) error {
-	return c.PublishBatchWithFlush(ctx, messages, true)
-}
-
-// PublishBatchWithFlush publishes multiple messages with optional flush control
-func (c *Client) PublishBatchWithFlush(ctx context.Context, messages []Message, flush bool) error {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	if err := c.CheckClientState(); err != nil {
-		return err
-	}
-
-	start := time.Now()
-	totalBytes := 0
-	errorCount := 0
-
-	// Validate all subjects first
-	for i, msg := range messages {
-		if err := ValidateSubject(msg.Subject); err != nil {
-			return c.ErrorWithMetrics(WrapValidationError(fmt.Sprintf("message[%d].subject", i), err))
-		}
-		totalBytes += len(msg.Data)
-	}
-
-	c.logger.DebugContext(ctx, "publishing batch messages",
-		"count", len(messages),
-		"total_bytes", totalBytes)
-
-	// Publish all messages without flushing each one
-	for _, msg := range messages {
-		if err := c.conn.Publish(msg.Subject, msg.Data); err != nil {
-			errorCount++
-			c.logger.WarnContext(ctx, "failed to publish message in batch",
-				"subject", msg.Subject,
-				"error", err)
-		}
-	}
-
-	// Single flush for all messages if requested
-	var flushErr error
-	if flush && errorCount < len(messages) {
-		flushErr = c.handleContextTimeout(ctx)
-	}
-
-	// Record metrics
-	if c.metrics != nil {
-		if errorCount > 0 {
-			c.metrics.RecordError()
-		}
-		if errorCount < len(messages) {
-			// Record successful publishes
-			c.metrics.RecordPublish(totalBytes, time.Since(start))
-		}
-	}
-
-	if errorCount == len(messages) {
-		return fmt.Errorf("all %d messages failed to publish", len(messages))
-	} else if errorCount > 0 {
-		return fmt.Errorf("%d out of %d messages failed to publish", errorCount, len(messages))
-	}
-
-	return flushErr
-}
-
-// handleContextTimeout handles context timeout and flushing logic.
-func (c *Client) handleContextTimeout(ctx context.Context) error {
-	// Check if context is already canceled/expired
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// Handle deadline-based timeout
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		// No deadline, just flush with default timeout
-		return c.conn.Flush()
-	}
-
-	timeRemaining := time.Until(deadline)
-	if timeRemaining <= 0 {
-		return context.DeadlineExceeded
-	}
-
-	// Flush with remaining time
-	if flushErr := c.conn.FlushTimeout(timeRemaining); flushErr != nil {
-		return fmt.Errorf("flush timeout: %w", flushErr)
-	}
-	return nil
-}
-
-// Subscribe subscribes to messages on the specified subject.
-func (c *Client) Subscribe(subject string, handler nats.MsgHandler) (*nats.Subscription, error) {
-	return c.SubscribeContext(context.Background(), subject, handler)
-}
-
-// SubscribeContext subscribes with context, integrating metrics and tracing.
-func (c *Client) SubscribeContext(
-	ctx context.Context,
-	subject string,
-	handler nats.MsgHandler,
-) (*nats.Subscription, error) {
-	if err := ValidateSubject(subject); err != nil {
-		return nil, c.ErrorWithMetrics(WrapValidationError("subject", err))
-	}
-
-	if err := c.CheckClientState(); err != nil {
-		return nil, err
-	}
-
-	// Build handler with metrics
-	handlerWithMetrics := func(msg *nats.Msg) {
-		// Metrics for receive
-		if c.metrics != nil {
-			c.metrics.RecordReceive(len(msg.Data))
-		}
-
-		handler(msg)
-	}
-
-	c.logger.DebugContext(context.Background(), "subscribing to subject", "subject", subject)
-	sub, err := c.conn.Subscribe(subject, handlerWithMetrics)
-
-	if err != nil {
-		return nil, c.ErrorWithMetrics(err)
-	}
-
-	// Add to managed subscriptions
-	c.subMu.Lock()
-	c.subscriptions = append(c.subscriptions, sub)
-	subCount := len(c.subscriptions)
-	c.subMu.Unlock()
-
-	// Update subscription count
-	if c.metrics != nil {
-		c.metrics.SetSubscriptionCount(subCount)
-	}
-
-	// Auto-unsubscribe when context is done
-	if ctx != nil {
-		go func() {
-			<-ctx.Done()
-			_ = c.Unsubscribe(sub)
-		}()
-	}
-
-	return sub, nil
-}
-
-// Unsubscribe removes a subscription and cleans it up.
-func (c *Client) Unsubscribe(sub *nats.Subscription) error {
-	if sub == nil {
-		return nil
-	}
-
-	// Remove from managed subscriptions
-	c.subMu.Lock()
-	for i, s := range c.subscriptions {
-		if s == sub {
-			c.subscriptions = append(c.subscriptions[:i], c.subscriptions[i+1:]...)
-			break
-		}
-	}
-	subCount := len(c.subscriptions)
-	c.subMu.Unlock()
-
-	// Update subscription count metrics
-	if c.metrics != nil {
-		c.metrics.SetSubscriptionCount(subCount)
-	}
-
-	err := sub.Unsubscribe()
-	if err != nil {
-		return c.ErrorWithMetrics(err)
-	}
-	return nil
-}
-
-// closeSubscriptions closes all managed subscriptions.
-func (c *Client) closeSubscriptions() {
-	c.subMu.Lock()
-	defer c.subMu.Unlock()
-
-	// Add panic recovery for concurrent subscription cleanup
-	defer func() {
-		if r := recover(); r != nil {
-			c.logger.Error("panic during subscription cleanup", "panic", r)
-		}
-	}()
-
-	for _, sub := range c.subscriptions {
-		if sub != nil {
-			// Protect individual unsubscribe operations
-			func(subscription *nats.Subscription) {
-				defer func() {
-					if r := recover(); r != nil {
-						c.logger.Warn("panic during individual unsubscribe", "panic", r)
-					}
-				}()
-				if err := subscription.Unsubscribe(); err != nil {
-					c.logger.Warn("failed to unsubscribe", "error", err)
-				}
-			}(sub)
-		}
-	}
-	c.subscriptions = nil
-	if c.metrics != nil {
-		c.metrics.SetSubscriptionCount(0)
-	}
-}
-
-// GetSubscriptionCount returns the number of active subscriptions.
-func (c *Client) GetSubscriptionCount() int {
-	c.subMu.RLock()
-	defer c.subMu.RUnlock()
-	return len(c.subscriptions)
 }
 
 // HealthCheck performs a basic health check on the NATS connection.
@@ -506,69 +207,4 @@ func (c *Client) HealthCheck() error {
 		return errors.New("natsx: not connected")
 	}
 	return nil
-}
-
-// ConnectionStatus represents NATS connection status.
-type ConnectionStatus struct {
-	Connected     bool      `json:"connected"`
-	LastConnected time.Time `json:"last_connected"`
-	LastError     string    `json:"last_error,omitempty"`
-	Reconnects    int       `json:"reconnects"`
-	ServerURL     string    `json:"server_url,omitempty"`
-}
-
-// GetMetrics returns the client metrics (for testing or monitoring).
-func (c *Client) GetMetrics() *Metrics {
-	return c.metrics
-}
-
-// IsMetricsEnabled returns whether metrics collection is enabled.
-func (c *Client) IsMetricsEnabled() bool {
-	return c.metrics != nil
-}
-
-// CreateKVManager creates a new KV manager with the given bucket configuration.
-func (c *Client) CreateKVManager(config BucketConfig) (*KVManager, error) {
-	if err := c.CheckClientState(); err != nil {
-		return nil, err
-	}
-	return NewKVManager(c.js, config)
-}
-
-// PutKV stores a key-value pair in the specified bucket.
-func (c *Client) PutKV(ctx context.Context, bucketName, key string, value []byte) error {
-	if err := c.CheckClientState(); err != nil {
-		return err
-	}
-
-	kv, err := c.js.KeyValue(ctx, bucketName)
-	if err != nil {
-		return fmt.Errorf("failed to get KV bucket %s: %w", bucketName, err)
-	}
-
-	_, err = kv.Put(ctx, key, value)
-	if err != nil {
-		return fmt.Errorf("failed to put key-value pair: %w", err)
-	}
-
-	return nil
-}
-
-// GetKV retrieves a value by key from the specified bucket.
-func (c *Client) GetKV(ctx context.Context, bucketName, key string) ([]byte, error) {
-	if err := c.CheckClientState(); err != nil {
-		return nil, err
-	}
-
-	kv, err := c.js.KeyValue(ctx, bucketName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get KV bucket %s: %w", bucketName, err)
-	}
-
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get key-value pair: %w", err)
-	}
-
-	return entry.Value(), nil
 }
