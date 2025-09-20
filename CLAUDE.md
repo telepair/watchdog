@@ -13,9 +13,8 @@ This is a distributed monitoring system with two main binaries:
 
 ### Core Components
 - **Server** (`internal/server/`): Main server orchestrating NATS infrastructure, health checks, and embedded agent
-- **Agent** (`internal/agent/`): Monitoring agent with collector and executor components
-  - **Collector** (`collector/`): System metrics collection and reporting via NATS
-  - **Executor** (`executor/`): Command execution engine with NATS messaging
+- **Agent** (`internal/agent/`): Monitoring agent with collector components
+  - **Collector** (`internal/collector/`): System metrics collection and reporting via NATS
 - **Configuration** (`internal/config/`): Unified config management for server, agent, and NATS storage
 - **NATS Integration** (`pkg/natsx/`): Custom NATS client with JetStream KV and embedded server support
 - **Common Packages** (`pkg/`): Reusable components (health, logger, shutdown, version)
@@ -60,12 +59,18 @@ make staticcheck # Run staticcheck analysis
 ### Building
 
 ```bash
-# Build for current platform
-go build -o watchdog .
+# Build both binaries for current platform
+make build
+
+# Build individual binaries:
+make build-watchdog      # Build watchdog server binary
+make build-agent         # Build watchdog-agent binary
 
 # Build for multiple platforms (as done in CI)
 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
-  -o build/watchdog-linux-amd64 .
+  -o build/watchdog-linux-amd64 ./cmd/watchdog
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
+  -o build/watchdog-agent-linux-amd64 ./cmd/watchdog-agent
 ```
 
 ### Dependency Management
@@ -128,9 +133,9 @@ standards before merge.
 
 ### Agent Architecture
 - Agents report system metrics via collector components
-- Command execution is handled through executor components with NATS messaging
 - Agent lifecycle events (startup/shutdown) are published to streams
 - All agent communication goes through JetStream for reliability
+- Agents can run standalone or embedded within the server
 
 ### Configuration Management
 - YAML-based configuration with extensive validation

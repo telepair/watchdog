@@ -31,7 +31,7 @@ func NewAgent(cfg *config.Config) (*AgentServer, error) {
 		cfg = config.DefaultConfig()
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.Parse(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
@@ -49,7 +49,7 @@ func NewAgent(cfg *config.Config) (*AgentServer, error) {
 	}
 
 	// Create health manager
-	healthManager, err := health.NewServer(cfg.Health)
+	healthManager, err := health.NewServer(cfg.HealthAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create health manager: %w", err)
 	}
@@ -60,10 +60,7 @@ func NewAgent(cfg *config.Config) (*AgentServer, error) {
 		WithLogger(logger.ComponentLogger("shutdown"))
 
 	// Create agent instance
-	agentInstance, err := agent.NewAgent(&cfg.Agent,
-		&cfg.Storage.AgentBucket,
-		&cfg.Storage.AgentStream,
-		natsClient)
+	agentInstance, err := agent.NewAgent(&cfg.Agent, &cfg.Collector, natsClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent: %w", err)
 	}
@@ -89,7 +86,7 @@ func (as *AgentServer) Start() error {
 
 	// Start health server in background
 	go func() {
-		if err := as.healthManager.ListenAndServe(context.Background()); err != nil && err != context.Canceled {
+		if err := as.healthManager.ListenAndServe(); err != nil && err != context.Canceled {
 			as.logger.Error("health server stopped unexpectedly", "error", err)
 		}
 	}()
@@ -109,7 +106,7 @@ func (as *AgentServer) Start() error {
 
 	as.logger.Info("agent server started successfully",
 		"nats_connected", as.natsClient.IsConnected(),
-		"health_addr", as.config.Health.Addr,
+		"health_addr", as.config.HealthAddr,
 	)
 
 	return nil
@@ -157,7 +154,7 @@ func (as *AgentServer) registerShutdownHandlers() {
 // registerHealthChecks registers health checks for agent server components
 func (as *AgentServer) registerHealthChecks() error {
 	// Register NATS connection health check
-	if err := as.healthManager.RegisterChecker("nats-connection", 30*time.Second, func(ctx context.Context) error {
+	if err := as.healthManager.RegisterChecker("nats-connection", 30*time.Second, func() error {
 		if err := as.natsClient.HealthCheck(); err != nil {
 			return fmt.Errorf("NATS health check failed: %w", err)
 		}

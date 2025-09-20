@@ -3,43 +3,96 @@ server:
     embed_nats:
         host: 127.0.0.1
         port: 4222
-        store_path: ./data/nats
+        store_path: /Users/liys/.watchdog/data/nats
         max_memory: 67108864
         max_storage: 1073741824
         log_level: INFO
         write_deadline: 2s
 agent:
     id: watchdog-agent
-    collector:
-        report_interval_sec: 10
-        collect_cpu: true
-        collect_memory: true
-        collect_disk: true
-        collect_network: true
-        collect_load: true
-        collect_uptime: true
     info_report_interval: 600
     heartbeat_interval: 5
-storage:
+collector:
+    system:
+        global_interval: 10
+        cpu:
+            enabled: true
+            subject_suffix: cpu
+            interval_seconds: 10
+        memory:
+            enabled: true
+            subject_suffix: mem
+            interval_seconds: 10
+        disk:
+            enabled: true
+            subject_suffix: disk
+            interval_seconds: 10
+        network:
+            enabled: true
+            subject_suffix: net
+            interval_seconds: 10
+        load:
+            enabled: true
+            subject_suffix: load
+            interval_seconds: 10
+        uptime:
+            enabled: true
+            subject_suffix: uptime
+            interval_seconds: 10
     agent_bucket:
-        name: wd-agents
+        bucket: wd-agent
+        description: ""
+        maxvaluesize: 0
         history: 3
-        ttl: 24h0m0s
-        storage: file
+        ttl: 168h0m0s
+        maxbytes: 0
+        storage: 0
         replicas: 1
+        placement: null
+        republish: null
+        mirror: null
+        sources: []
         compression: false
+        limitmarkerttl: 0s
     agent_stream:
-        name: wd-agents
-        description: Agent communications stream
-        subject_pattern: wd.a.>
-        retention: limits
-        max_age: 168h0m0s
-        max_bytes: 104857600
-        max_msgs: 100000
-        storage: file
+        name: wd-agent
+        description: ""
+        subjects:
+            - wd.a.>
+        retention: 0
+        maxconsumers: 0
+        maxmsgs: 0
+        maxbytes: 1073741824
+        discard: 0
+        discardnewpersubject: false
+        maxage: 168h0m0s
+        maxmsgspersubject: 0
+        maxmsgsize: 0
+        storage: 0
         replicas: 1
-        no_ack: false
+        noack: false
         duplicates: 5m0s
+        placement: null
+        mirror: null
+        sources: []
+        sealed: false
+        denydelete: false
+        denypurge: false
+        allowrollup: false
+        compression: 0
+        firstseq: 0
+        subjecttransform: null
+        republish: null
+        allowdirect: false
+        mirrordirect: false
+        consumerlimits:
+            inactivethreshold: 0s
+            maxackpending: 0
+        metadata: {}
+        template: ""
+        allowmsgttl: false
+        subjectdeletemarkerttl: 0s
+    agent_subject_prefix: wd.a.
 nats:
     name: natsx.client
     urls:
@@ -52,12 +105,6 @@ nats:
     reconnect_wait: 2s
     enable_tls: false
     tls_skip_verify: false
-health:
-    addr: :9091
-    livez_path: /livez
-    readyz_path: /readyz
-    metrics_path: /metrics
-    metrics_namespace: ""
 logger:
     console:
         enabled: true
@@ -72,4 +119,5 @@ logger:
         max_backups: 3
         max_age: 7
         compress: true
+health_addr: :9091
 shutdown_timeout_sec: 10

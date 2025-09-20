@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/telepair/watchdog/internal/agent"
 	"github.com/telepair/watchdog/internal/config"
 	"github.com/telepair/watchdog/pkg/health"
@@ -15,6 +14,11 @@ import (
 	"github.com/telepair/watchdog/pkg/natsx/client"
 	"github.com/telepair/watchdog/pkg/natsx/embed"
 	"github.com/telepair/watchdog/pkg/shutdown"
+)
+
+const (
+	defaultShutdownTimeout = 10 * time.Second
+	healthCheckInterval    = 30 * time.Second
 )
 
 // Server represents the unified server that can run as agent or main server
@@ -34,7 +38,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		cfg = config.DefaultConfig()
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.Parse(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
@@ -67,22 +71,24 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to create NATS client: %w", err)
 	}
 
+	// Initialize NATS infrastructure (KV buckets and streams)
+	if err := srv.initializeNATSInfrastructure(); err != nil {
+		return nil, fmt.Errorf("failed to initialize NATS infrastructure: %w", err)
+	}
+
 	// Create health manager
-	srv.healthManager, err = health.NewServer(cfg.Health)
+	srv.healthManager, err = health.NewServer(cfg.HealthAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create health manager: %w", err)
 	}
 
 	// Create shutdown manager
 	srv.shutdownMgr = shutdown.NewManager().
-		WithTimeout(10 * time.Second).
+		WithTimeout(defaultShutdownTimeout).
 		WithLogger(logger.ComponentLogger("shutdown"))
 
 		// Create agent if embedded agent is enabled
-	srv.agent, err = agent.NewAgent(&cfg.Agent,
-		&cfg.Storage.AgentBucket,
-		&cfg.Storage.AgentStream,
-		srv.natsClient)
+	srv.agent, err = agent.NewAgent(&cfg.Agent, &cfg.Collector, srv.natsClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent: %w", err)
 	}
@@ -99,17 +105,27 @@ func (s *Server) Start() error {
 		"embedded_nats", s.config.Server.EnableEmbedNATS,
 	)
 
-	// Start health server in background
+	// Start health server in background with recovery mechanism
+	healthErrorChan := make(chan error, 1)
 	go func() {
-		if err := s.healthManager.ListenAndServe(context.Background()); err != nil && err != context.Canceled {
+		defer close(healthErrorChan)
+		if err := s.healthManager.ListenAndServe(); err != nil && err != context.Canceled {
 			s.logger.Error("health server stopped unexpectedly", "error", err)
+			select {
+			case healthErrorChan <- err:
+			default:
+			}
 		}
 	}()
 
-	// Initialize NATS infrastructure (KV buckets and streams)
-	if err := s.initializeNATSInfrastructure(); err != nil {
-		return fmt.Errorf("failed to initialize NATS infrastructure: %w", err)
-	}
+	// Monitor health server errors
+	go func() {
+		for err := range healthErrorChan {
+			s.logger.Warn("health server error detected", "error", err)
+			// In production, consider implementing restart logic or circuit breaker
+			// For now, we just log the error for monitoring purposes
+		}
+	}()
 
 	// Register health checks
 	if err := s.registerHealthChecks(); err != nil {
@@ -128,7 +144,7 @@ func (s *Server) Start() error {
 
 	s.logger.Info("watchdog started successfully",
 		"nats_connected", s.natsClient.IsConnected(),
-		"health_addr", s.config.Health.Addr,
+		"health_addr", s.config.HealthAddr,
 		"agent_running", s.agent != nil,
 		"embedded_nats_running", s.embeddedNATS != nil && s.embeddedNATS.IsRunning(),
 	)
@@ -149,118 +165,20 @@ func (s *Server) Wait() error {
 
 // initializeNATSInfrastructure initializes KV buckets and streams required by agents
 func (s *Server) initializeNATSInfrastructure() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	js := s.natsClient.JetStream()
-	if js == nil {
-		// Check if NATS is connected first for better error message
-		if !s.natsClient.IsConnected() {
-			return fmt.Errorf("JetStream not available: NATS client not connected")
-		}
-		return fmt.Errorf("JetStream not available: feature may not be enabled on NATS server")
+	if _, err := s.natsClient.EnsureBucket(context.Background(), s.config.Collector.AgentBucket); err != nil {
+		s.logger.Error("failed to ensure agent bucket", "error", err, "bucket", s.config.Collector.AgentBucket.Bucket)
+		return fmt.Errorf("failed to ensure agent bucket: %w", err)
 	}
 
-	// Initialize Agent bucket for agent data
-	if err := s.initializeAgentBucket(ctx, js); err != nil {
-		return fmt.Errorf("failed to initialize KV bucket: %w", err)
-	}
-
-	// Initialize JetStream for agent communications
-	if err := s.initializeAgentStream(ctx, js); err != nil {
-		return fmt.Errorf("failed to initialize agent stream: %w", err)
+	if _, err := s.natsClient.EnsureStream(context.Background(), s.config.Collector.AgentStream); err != nil {
+		s.logger.Error("failed to ensure agent stream", "error", err, "stream", s.config.Collector.AgentStream.Name)
+		return fmt.Errorf("failed to ensure agent stream: %w", err)
 	}
 
 	s.logger.Info("NATS infrastructure initialized successfully")
 	return nil
 }
 
-// initializeAgentBucket creates or ensures the agent KV bucket exists
-func (s *Server) initializeAgentBucket(ctx context.Context, js jetstream.JetStream) error {
-	bucketCfg := s.config.Storage.AgentBucket
-
-	var storage jetstream.StorageType
-	switch bucketCfg.Storage {
-	case "memory":
-		storage = jetstream.MemoryStorage
-	default:
-		storage = jetstream.FileStorage
-	}
-
-	bucketConfig := jetstream.KeyValueConfig{
-		Bucket:      bucketCfg.Name,
-		History:     bucketCfg.History,
-		TTL:         bucketCfg.TTL,
-		Storage:     storage,
-		Replicas:    bucketCfg.Replicas,
-		Compression: bucketCfg.Compression,
-	}
-
-	_, err := js.CreateKeyValue(ctx, bucketConfig)
-	if err != nil {
-		// Try to get existing bucket
-		_, err = js.KeyValue(ctx, bucketCfg.Name)
-		if err != nil {
-			s.logger.Error("failed to create or get KV bucket", "bucket", bucketCfg.BucketName(), "error", err)
-			return fmt.Errorf("failed to create or get KV bucket %s: %w", bucketCfg.BucketName(), err)
-		}
-	}
-
-	s.logger.Info("KV bucket initialized", "bucket", bucketCfg.BucketName())
-	return nil
-}
-
-// initializeAgentStream creates or ensures the agent stream exists
-func (s *Server) initializeAgentStream(ctx context.Context, js jetstream.JetStream) error {
-	streamCfg := s.config.Storage.AgentStream
-
-	var retention jetstream.RetentionPolicy
-	switch streamCfg.Retention {
-	case "interest":
-		retention = jetstream.InterestPolicy
-	case "workqueue":
-		retention = jetstream.WorkQueuePolicy
-	default:
-		retention = jetstream.LimitsPolicy
-	}
-
-	var storage jetstream.StorageType
-	switch streamCfg.Storage {
-	case "memory":
-		storage = jetstream.MemoryStorage
-	default:
-		storage = jetstream.FileStorage
-	}
-
-	streamConfig := jetstream.StreamConfig{
-		Name:        streamCfg.Name,
-		Description: streamCfg.Description,
-		Subjects:    []string{streamCfg.SubjectPattern},
-		Retention:   retention,
-		MaxAge:      streamCfg.MaxAge,
-		MaxBytes:    streamCfg.MaxBytes,
-		MaxMsgs:     streamCfg.MaxMsgs,
-		Storage:     storage,
-		Replicas:    streamCfg.Replicas,
-		NoAck:       streamCfg.NoAck,
-		Duplicates:  streamCfg.Duplicates,
-	}
-
-	_, err := js.CreateStream(ctx, streamConfig)
-	if err != nil {
-		// Try to get existing stream
-		_, err = js.Stream(ctx, streamCfg.Name)
-		if err != nil {
-			s.logger.Error("failed to create or get stream", "stream", streamCfg.Name, "error", err)
-			return fmt.Errorf("failed to create or get stream %s: %w", streamCfg.Name, err)
-		}
-	}
-
-	s.logger.Info("agent stream initialized", "stream", streamCfg.Name)
-	return nil
-}
-
-// registerShutdownHandlers registers shutdown handlers for all components.
 // Shutdown order is important: stop dependent services first, then infrastructure components.
 func (s *Server) registerShutdownHandlers() {
 	// 0. Set ready state to false immediately when shutdown starts
@@ -302,7 +220,7 @@ func (s *Server) registerShutdownHandlers() {
 // registerHealthChecks registers health checks for server components.
 func (s *Server) registerHealthChecks() error {
 	// Register NATS connection health check
-	if err := s.healthManager.RegisterChecker("nats-connection", 30*time.Second, func(ctx context.Context) error {
+	if err := s.healthManager.RegisterChecker("nats-connection", healthCheckInterval, func() error {
 		if err := s.natsClient.HealthCheck(); err != nil {
 			return fmt.Errorf("NATS health check failed: %w", err)
 		}
@@ -313,7 +231,7 @@ func (s *Server) registerHealthChecks() error {
 
 	// Register embedded NATS server health check
 	if s.embeddedNATS != nil {
-		if err := s.healthManager.RegisterChecker("embedded-nats", 30*time.Second, func(ctx context.Context) error {
+		if err := s.healthManager.RegisterChecker("embedded-nats", healthCheckInterval, func() error {
 			if err := s.embeddedNATS.HealthCheck(); err != nil {
 				return fmt.Errorf("embedded NATS health check failed: %w", err)
 			}

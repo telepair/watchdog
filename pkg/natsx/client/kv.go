@@ -4,117 +4,81 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const defaultInitTimeout = 5 * time.Second
+type BucketConfig = jetstream.KeyValueConfig
 
-// BucketConfig is the configuration for a NATS key-value store bucket.
-type BucketConfig struct {
-	Name         string        `yaml:"name"           json:"name"`
-	History      uint8         `yaml:"history"        json:"history"`
-	Replicas     int           `yaml:"replicas"       json:"replicas"`
-	OnMemory     bool          `yaml:"on_memory"      json:"on_memory"`
-	Compression  bool          `yaml:"compression"    json:"compression"`
-	MaxBytes     int64         `yaml:"max_bytes"      json:"max_bytes"`
-	MaxValueSize int32         `yaml:"max_value_size" json:"max_value_size"`
-	Tags         []string      `yaml:"tags"           json:"tags"`
-	Cluster      string        `yaml:"cluster"        json:"cluster"`
-	TTL          time.Duration `yaml:"ttl"            json:"ttl"`
-}
-
-// Validate validates the bucket config.
-func (c *BucketConfig) Validate() error {
-	if err := ValidateBucketName(c.Name); err != nil {
-		return fmt.Errorf("invalid bucket name: %w", err)
-	}
-	return nil
-}
-
-// KVManager manages NATS key-value stores.
-type KVManager struct {
+// Bucket manages NATS key-value stores.
+type Bucket struct {
+	name   string
 	js     jetstream.JetStream
 	kv     jetstream.KeyValue
-	config *BucketConfig
 	logger *slog.Logger
 }
 
-// NewKVManager creates a new KV manager.
-func NewKVManager(js jetstream.JetStream, config BucketConfig) (*KVManager, error) {
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid bucket config: %w", err)
+func (c *Client) EnsureBucket(ctx context.Context, config BucketConfig) (*Bucket, error) {
+	if err := ValidateBucketName(config.Bucket); err != nil {
+		return nil, fmt.Errorf("invalid bucket name: %w", err)
 	}
 
-	// Create a copy of the config to avoid external mutations
-	configCopy := config
-	manager := &KVManager{
-		js:     js,
-		config: &configCopy,
+	// Try to get existing bucket first
+	kv, err := c.js.KeyValue(ctx, config.Bucket)
+	if err != nil {
+		// If bucket doesn't exist, create it
+		kv, err = c.js.CreateKeyValue(ctx, config)
+		if err != nil {
+			c.logger.Error("failed to ensure KV bucket", "error", err)
+			return nil, fmt.Errorf("failed to ensure KV bucket: %w", err)
+		}
 	}
-	manager.logger = slog.Default().With("component", fmt.Sprintf("natsx.kv.%s", config.Name))
 
-	if err := manager.initKV(); err != nil {
-		return nil, fmt.Errorf("failed to initialize KV store: %w", err)
-	}
-
-	return manager, nil
+	return &Bucket{
+		name:   config.Bucket,
+		js:     c.js,
+		kv:     kv,
+		logger: c.logger.With("bucket", config.Bucket),
+	}, nil
 }
 
-// initKV initializes the key-value store.
-func (m *KVManager) initKV() error {
-	cfg := jetstream.KeyValueConfig{
-		Bucket:       m.config.Name,
-		TTL:          m.config.TTL,
-		History:      m.config.History,
-		Replicas:     m.config.Replicas,
-		Compression:  m.config.Compression,
-		MaxBytes:     m.config.MaxBytes,
-		MaxValueSize: m.config.MaxValueSize,
-	}
-	if m.config.OnMemory {
-		cfg.Storage = jetstream.MemoryStorage
-	} else {
-		cfg.Storage = jetstream.FileStorage
+func (c *Client) CreateBucket(ctx context.Context, config BucketConfig) (*Bucket, error) {
+	if err := ValidateBucketName(config.Bucket); err != nil {
+		return nil, fmt.Errorf("invalid bucket name: %w", err)
 	}
 
-	if m.config.Cluster != "" {
-		cfg.Placement = &jetstream.Placement{
-			Cluster: m.config.Cluster,
-		}
-	}
-	if len(m.config.Tags) > 0 {
-		if cfg.Placement == nil {
-			cfg.Placement = &jetstream.Placement{}
-		}
-		cfg.Placement.Tags = m.config.Tags
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), defaultInitTimeout)
-	defer cancel()
-	kv, err := m.js.CreateKeyValue(ctx, cfg)
+	kv, err := c.js.CreateKeyValue(ctx, config)
 	if err != nil {
 		// Try to get existing bucket
-		kv, err = m.js.KeyValue(ctx, m.config.Name)
+		kv, err = c.js.KeyValue(ctx, config.Bucket)
 		if err != nil {
-			m.logger.Error("failed to create or get KV bucket", "error", err)
-			return fmt.Errorf("failed to create or get KV bucket: %w", err)
+			c.logger.Error("failed to create or get KV bucket", "error", err)
+			return nil, fmt.Errorf("failed to create or get KV bucket: %w", err)
 		}
 	}
 
-	m.kv = kv
-	m.logger.Info("KV bucket initialized", "bucket", m.config.Name)
-	return nil
+	return &Bucket{
+		name:   config.Bucket,
+		js:     c.js,
+		kv:     kv,
+		logger: c.logger.With("bucket", config.Bucket),
+	}, nil
 }
 
-// KeyValue returns the underlying key-value store.
-func (m *KVManager) KeyValue() jetstream.KeyValue {
-	return m.kv
+func (c *Client) GetBucket(name string) (*Bucket, error) {
+	if err := ValidateBucketName(name); err != nil {
+		return nil, fmt.Errorf("invalid bucket name: %w", err)
+	}
+
+	kv, err := c.js.KeyValue(context.Background(), name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get KV bucket: %w", err)
+	}
+	return &Bucket{name: name, js: c.js, kv: kv, logger: c.logger.With("bucket", name)}, nil
 }
 
 // Put stores a value with the given key.
-func (m *KVManager) Put(ctx context.Context, key string, value []byte) error {
+func (b *Bucket) Put(ctx context.Context, key string, value []byte) error {
 	if err := ValidateKey(key); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
 	}
@@ -122,40 +86,40 @@ func (m *KVManager) Put(ctx context.Context, key string, value []byte) error {
 		return fmt.Errorf("invalid value: %w", err)
 	}
 
-	_, err := m.kv.Put(ctx, key, value)
+	_, err := b.kv.Put(ctx, key, value)
 	if err != nil {
-		m.logger.ErrorContext(ctx, "failed to put key-value pair", "error", err)
+		b.logger.ErrorContext(ctx, "failed to put key-value pair", "error", err)
 		return err
 	}
-	m.logger.DebugContext(ctx, "put key-value pair", "key", key)
+	b.logger.DebugContext(ctx, "put key-value pair", "key", key)
 	return nil
 }
 
 // Get retrieves a value by key.
-func (m *KVManager) Get(ctx context.Context, key string) ([]byte, error) {
+func (b *Bucket) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := ValidateKey(key); err != nil {
 		return nil, fmt.Errorf("invalid key: %w", err)
 	}
 
-	entry, err := m.kv.Get(ctx, key)
+	entry, err := b.kv.Get(ctx, key)
 	if err != nil {
-		m.logger.ErrorContext(ctx, "failed to get key-value pair", "error", err)
+		b.logger.ErrorContext(ctx, "failed to get key-value pair", "error", err)
 		return nil, err
 	}
-	m.logger.DebugContext(ctx, "got key-value pair", "key", key)
+	b.logger.DebugContext(ctx, "got key-value pair", "key", key)
 	return entry.Value(), nil
 }
 
 // Delete removes a key-value pair.
-func (m *KVManager) Delete(ctx context.Context, key string) error {
+func (b *Bucket) Delete(ctx context.Context, key string) error {
 	if err := ValidateKey(key); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
 	}
 
-	if err := m.kv.Delete(ctx, key); err != nil {
-		m.logger.ErrorContext(ctx, "failed to delete key-value pair", "error", err)
+	if err := b.kv.Delete(ctx, key); err != nil {
+		b.logger.ErrorContext(ctx, "failed to delete key-value pair", "error", err)
 		return err
 	}
-	m.logger.DebugContext(ctx, "deleted key-value pair", "key", key)
+	b.logger.DebugContext(ctx, "deleted key-value pair", "key", key)
 	return nil
 }

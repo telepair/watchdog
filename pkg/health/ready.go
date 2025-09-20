@@ -10,14 +10,12 @@ import (
 type ReadinessManager struct {
 	ready     atomic.Bool
 	startTime time.Time
-	logger    *slog.Logger
 }
 
 // NewReadinessManager creates a new ReadinessManager.
 func NewReadinessManager() *ReadinessManager {
 	rm := &ReadinessManager{
 		startTime: time.Now(),
-		logger:    slog.Default().With("component", "health.readiness"),
 	}
 	rm.ready.Store(false)
 	return rm
@@ -28,9 +26,9 @@ func (r *ReadinessManager) SetReady(ready bool) {
 	old := r.ready.Swap(ready)
 
 	if old != ready {
-		r.logger.Info("readiness state changed", "from", old, "to", ready)
+		slog.Info("readiness state changed", "from", old, "to", ready)
 	} else {
-		r.logger.Debug("readiness state unchanged", "ready", ready)
+		slog.Debug("readiness state unchanged", "ready", ready)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/telepair/watchdog/internal/config"
 	"github.com/telepair/watchdog/internal/server"
 )
 
@@ -20,18 +19,9 @@ func newStartCommand() *cobra.Command {
 
 func runAgent(cmd *cobra.Command, args []string) error {
 	// Load configuration
-	cfg, err := config.LoadConfig(ConfigFile)
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Override config with command line flags
-	if err := cfg.Logger.SetLevel(LogLevel); err != nil {
-		return fmt.Errorf("failed to set log level: %w", err)
-	}
-
-	if NatsURL != "" {
-		cfg.NATS.URLs = []string{NatsURL}
 	}
 
 	// Create and start unified server in agent mode

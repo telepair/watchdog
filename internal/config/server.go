@@ -19,9 +19,9 @@ func DefaultServerConfig() ServerConfig {
 	}
 }
 
-func (s *ServerConfig) Validate() error {
+func (s *ServerConfig) Parse() error {
 	if s.EnableEmbedNATS && s.EmbedNATS == nil {
-		return fmt.Errorf("embed_nats must be set if enable_embed_nats is true")
+		s.EmbedNATS = embed.DefaultServerConfig()
 	}
 	if s.EnableEmbedNATS {
 		if err := s.EmbedNATS.Validate(); err != nil {
@@ -29,10 +29,4 @@ func (s *ServerConfig) Validate() error {
 		}
 	}
 	return nil
-}
-
-func (s *ServerConfig) SetDefaults() {
-	if s.EnableEmbedNATS && s.EmbedNATS == nil {
-		s.EmbedNATS = embed.DefaultServerConfig()
-	}
 }

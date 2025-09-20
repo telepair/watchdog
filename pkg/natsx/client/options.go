@@ -48,28 +48,16 @@ func (ob *OptionsBuilder) buildEventHandlers() []nats.Option {
 			if err != nil {
 				ob.client.logger.Warn("NATS disconnected", "error", err)
 			}
-			if ob.client.metrics != nil {
-				ob.client.metrics.RecordDisconnection()
-			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			ob.client.logger.Info("NATS reconnected", "url", nc.ConnectedUrl())
-			if ob.client.metrics != nil {
-				ob.client.metrics.RecordReconnection()
-			}
 		}),
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			ob.client.logger.Warn("NATS connection closed")
-			if ob.client.metrics != nil {
-				ob.client.metrics.RecordConnectionClosed()
-			}
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			if err != nil {
 				ob.client.logger.Error("NATS async error", "error", err)
-				if ob.client.metrics != nil {
-					ob.client.metrics.RecordError()
-				}
 			}
 		}),
 	}

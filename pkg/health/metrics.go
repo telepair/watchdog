@@ -86,16 +86,8 @@ func NewPrometheusRegistry(namespace string) *PrometheusRegistry {
 
 // NewCounter creates and registers a new counter with the provided name and const labels.
 func (r *PrometheusRegistry) NewCounter(name string, constLabels map[string]string) (Counter, error) {
-	counter, _, err := r.NewCounterWithCollector(name, constLabels)
-	return counter, err
-}
-
-// NewCounterWithCollector creates and registers a new counter, returning both the Counter interface and
-// the prometheus.Collector.
-func (r *PrometheusRegistry) NewCounterWithCollector(name string, constLabels map[string]string) (Counter,
-	prometheus.Collector, error) {
 	if r == nil || r.reg == nil {
-		return nil, nil, errors.New("registry is nil")
+		return nil, errors.New("registry is nil")
 	}
 	c := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   r.namespace,
@@ -103,26 +95,18 @@ func (r *PrometheusRegistry) NewCounterWithCollector(name string, constLabels ma
 		ConstLabels: maps.Clone(constLabels),
 	})
 	if err := r.reg.Register(c); err != nil {
-		return nil, nil, fmt.Errorf("error registering metric %q: %w", name, err)
+		return nil, fmt.Errorf("error registering metric %q: %w", name, err)
 	}
 
 	// Clear cached handler when new metrics are registered
 	r.invalidateHandler()
-	return &counterImpl{c: c}, c, nil
+	return &counterImpl{c: c}, nil
 }
 
 // NewGauge creates and registers a new gauge with the provided name and const labels.
 func (r *PrometheusRegistry) NewGauge(name string, constLabels map[string]string) (Gauge, error) {
-	gauge, _, err := r.NewGaugeWithCollector(name, constLabels)
-	return gauge, err
-}
-
-// NewGaugeWithCollector creates and registers a new gauge, returning both the Gauge interface and
-// the prometheus.Collector.
-func (r *PrometheusRegistry) NewGaugeWithCollector(name string, constLabels map[string]string) (Gauge,
-	prometheus.Collector, error) {
 	if r == nil || r.reg == nil {
-		return nil, nil, errors.New("registry is nil")
+		return nil, errors.New("registry is nil")
 	}
 	g := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   r.namespace,
@@ -130,12 +114,12 @@ func (r *PrometheusRegistry) NewGaugeWithCollector(name string, constLabels map[
 		ConstLabels: maps.Clone(constLabels),
 	})
 	if err := r.reg.Register(g); err != nil {
-		return nil, nil, fmt.Errorf("error registering metric %q: %w", name, err)
+		return nil, fmt.Errorf("error registering metric %q: %w", name, err)
 	}
 
 	// Clear cached handler when new metrics are registered
 	r.invalidateHandler()
-	return &gaugeImpl{g: g}, g, nil
+	return &gaugeImpl{g: g}, nil
 }
 
 // NewHistogram creates and registers a new histogram with the provided name, const labels and buckets.
@@ -144,18 +128,8 @@ func (r *PrometheusRegistry) NewHistogram(
 	constLabels map[string]string,
 	buckets []float64,
 ) (Histogram, error) {
-	histogram, _, err := r.NewHistogramWithCollector(name, constLabels, buckets)
-	return histogram, err
-}
-
-// NewHistogramWithCollector creates and registers a new histogram, returning both the Histogram interface and the prometheus.Collector.
-func (r *PrometheusRegistry) NewHistogramWithCollector(
-	name string,
-	constLabels map[string]string,
-	buckets []float64,
-) (Histogram, prometheus.Collector, error) {
 	if r == nil || r.reg == nil {
-		return nil, nil, errors.New("registry is nil")
+		return nil, errors.New("registry is nil")
 	}
 	if len(buckets) == 0 {
 		buckets = DefaultBuckets
@@ -167,12 +141,12 @@ func (r *PrometheusRegistry) NewHistogramWithCollector(
 		ConstLabels: maps.Clone(constLabels),
 	})
 	if err := r.reg.Register(h); err != nil {
-		return nil, nil, fmt.Errorf("error registering metric %q: %w", name, err)
+		return nil, fmt.Errorf("error registering metric %q: %w", name, err)
 	}
 
 	// Clear cached handler when new metrics are registered
 	r.invalidateHandler()
-	return &histogramImpl{h: h}, h, nil
+	return &histogramImpl{h: h}, nil
 }
 
 // cachedHandler wraps the cached HTTP handler along with its readiness state.
@@ -206,18 +180,6 @@ func (r *PrometheusRegistry) HTTPHandler() http.Handler {
 	h := r.wrapMetricsHandler(baseHandler)
 	r.handler.Store(cachedHandler{handler: h, ready: true})
 	return h
-}
-
-// ensureHTTPMetrics initializes and registers global HTTP metrics once.
-func (r *PrometheusRegistry) ensureHTTPMetrics() {
-	if r == nil || r.reg == nil {
-		return
-	}
-	r.httpOnce.Do(func() {
-		r.registerHTTPGaugeMetrics()
-		r.registerHTTPCounterMetrics()
-		r.registerHTTPHistogramMetrics()
-	})
 }
 
 // registerHTTPGaugeMetrics registers HTTP gauge metrics.
@@ -269,12 +231,16 @@ func (r *PrometheusRegistry) registerHTTPHistogramMetrics() {
 	_ = r.reg.Register(r.httpResponseSizeBytes)
 }
 
-// InstrumentHTTPHandler wraps an http.Handler with Prometheus HTTP instrumentation using global metrics.
-func (r *PrometheusRegistry) InstrumentHTTPHandler(handlerName string, h http.Handler) http.Handler {
+// HTTPMiddleware wraps an http.Handler with Prometheus HTTP instrumentation using global metrics.
+func (r *PrometheusRegistry) HTTPMiddleware(handlerName string, h http.Handler) http.Handler {
 	if r == nil || r.reg == nil || h == nil || handlerName == "" {
 		return h
 	}
-	r.ensureHTTPMetrics()
+	r.httpOnce.Do(func() {
+		r.registerHTTPGaugeMetrics()
+		r.registerHTTPCounterMetrics()
+		r.registerHTTPHistogramMetrics()
+	})
 
 	duration := r.httpRequestDuration.MustCurryWith(prometheus.Labels{"handler": handlerName})
 	reqSize := r.httpRequestSizeBytes.MustCurryWith(prometheus.Labels{"handler": handlerName})
@@ -301,11 +267,21 @@ func (r *PrometheusRegistry) InstrumentHTTPHandler(handlerName string, h http.Ha
 // gzipResponseWriter wraps http.ResponseWriter to provide gzip compression.
 type gzipResponseWriter struct {
 	http.ResponseWriter
+	gw            *gzip.Writer
+	headerWritten bool
+}
 
-	gw *gzip.Writer
+func (grw *gzipResponseWriter) WriteHeader(statusCode int) {
+	if !grw.headerWritten {
+		grw.ResponseWriter.WriteHeader(statusCode)
+		grw.headerWritten = true
+	}
 }
 
 func (grw *gzipResponseWriter) Write(data []byte) (int, error) {
+	if !grw.headerWritten {
+		grw.WriteHeader(http.StatusOK)
+	}
 	return grw.gw.Write(data)
 }
 
@@ -325,9 +301,14 @@ func (grw *gzipResponseWriter) Close() error {
 // wrapMetricsHandler adds compression, security headers and caching to metrics endpoint.
 func (r *PrometheusRegistry) wrapMetricsHandler(base http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		r.setSecurityHeaders(w)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
 
-		if !r.validateRequest(w, req) {
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -336,35 +317,12 @@ func (r *PrometheusRegistry) wrapMetricsHandler(base http.Handler) http.Handler 
 			return
 		}
 
-		r.serveWithOptionalCompression(w, req, base)
+		if strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
+			r.serveWithGzipCompression(w, req, base)
+		} else {
+			base.ServeHTTP(w, req)
+		}
 	})
-}
-
-// setSecurityHeaders sets security headers for metrics endpoint.
-func (r *PrometheusRegistry) setSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-}
-
-// validateRequest validates HTTP method for metrics endpoint.
-func (r *PrometheusRegistry) validateRequest(w http.ResponseWriter, req *http.Request) bool {
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return false
-	}
-	return true
-}
-
-// serveWithOptionalCompression serves the request with gzip compression if supported.
-func (r *PrometheusRegistry) serveWithOptionalCompression(w http.ResponseWriter, req *http.Request, base http.Handler) {
-	if strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
-		r.serveWithGzipCompression(w, req, base)
-	} else {
-		base.ServeHTTP(w, req)
-	}
 }
 
 // serveWithGzipCompression serves the request with gzip compression.
@@ -373,37 +331,28 @@ func (r *PrometheusRegistry) serveWithGzipCompression(w http.ResponseWriter, req
 	w.Header().Set("Vary", "Accept-Encoding")
 
 	gw := gzip.NewWriter(w)
-	defer func() {
-		if err := gw.Close(); err != nil {
-			// Log error but don't fail the request
-			_ = err
-		}
-	}()
-
 	grw := &gzipResponseWriter{
 		ResponseWriter: w,
 		gw:             gw,
 	}
+
 	base.ServeHTTP(grw, req)
+
+	// Flush and close gzip writer to ensure all data is written
+	if err := gw.Flush(); err != nil {
+		// Log error but don't fail the request
+		_ = err
+	}
+	if err := gw.Close(); err != nil {
+		// Log error but don't fail the request
+		_ = err
+	}
 }
 
 // invalidateHandler clears the cached HTTP handler.
 func (r *PrometheusRegistry) invalidateHandler() {
 	// Reset cached handler; next access will rebuild
 	r.handler.Store(cachedHandler{})
-}
-
-// UnregisterCollector removes a collector from the registry.
-func (r *PrometheusRegistry) UnregisterCollector(collector prometheus.Collector) bool {
-	if r == nil || r.reg == nil || collector == nil {
-		return false
-	}
-	success := r.reg.Unregister(collector)
-	if success {
-		// Clear cached handler when metrics are unregistered
-		r.invalidateHandler()
-	}
-	return success
 }
 
 type counterImpl struct{ c prometheus.Counter }
@@ -455,68 +404,3 @@ type histogramImpl struct{ h prometheus.Histogram }
 
 // Observe records one observation to the histogram.
 func (h *histogramImpl) Observe(v float64) { h.h.Observe(v) }
-
-// MetricsManager manages Prometheus metrics.
-type MetricsManager struct {
-	reg    *PrometheusRegistry
-	logger *slog.Logger
-}
-
-// NewMetricsManager creates a new MetricsManager.
-func NewMetricsManager(namespace string) *MetricsManager {
-	return &MetricsManager{
-		reg:    NewPrometheusRegistry(namespace),
-		logger: slog.Default().With("component", "health.metrics"),
-	}
-}
-
-// RegisterCounter registers a new counter metric.
-func (m *MetricsManager) RegisterCounter(name string, labels map[string]string) (Counter, error) {
-	counter, _, err := m.reg.NewCounterWithCollector(name, labels)
-	if err != nil {
-		return nil, err
-	}
-
-	m.logger.Info("registered counter", "name", name, "labels", labels)
-	return counter, nil
-}
-
-// RegisterGauge registers a new gauge metric.
-func (m *MetricsManager) RegisterGauge(name string, labels map[string]string) (Gauge, error) {
-	gauge, _, err := m.reg.NewGaugeWithCollector(name, labels)
-	if err != nil {
-		return nil, err
-	}
-
-	m.logger.Info("registered gauge", "name", name, "labels", labels)
-	return gauge, nil
-}
-
-// RegisterHistogram registers a new histogram metric.
-func (m *MetricsManager) RegisterHistogram(
-	name string,
-	labels map[string]string,
-	buckets []float64,
-) (Histogram, error) {
-	histogram, _, err := m.reg.NewHistogramWithCollector(name, labels, buckets)
-	if err != nil {
-		return nil, err
-	}
-
-	m.logger.Info("registered histogram", "name", name, "labels", labels, "buckets", buckets)
-	return histogram, nil
-}
-
-// HTTPHandler returns the metrics HTTP handler.
-func (m *MetricsManager) HTTPHandler() http.Handler {
-	return m.reg.HTTPHandler()
-}
-
-// HTTPMiddleware instruments an http.Handler with global HTTP metrics.
-// handlerName should be a stable, low-cardinality identifier for the route group.
-func (m *MetricsManager) HTTPMiddleware(handlerName string, next http.Handler) http.Handler {
-	if m == nil || m.reg == nil || next == nil || handlerName == "" {
-		return next
-	}
-	return m.reg.InstrumentHTTPHandler(handlerName, next)
-}
